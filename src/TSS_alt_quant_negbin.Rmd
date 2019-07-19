@@ -1,0 +1,1831 @@
+---
+title: "Alternative TSS usage in JEC21 and H99"
+author: "Edward Wallace, ewjwallace@gmail.com"
+date: "6th March 2018, rev 19 July 2019"
+output:
+  html_document:
+    toc: true
+    toc_depth: 4
+---
+
+# Summary 
+
+This document uses **unnormalized** TSS counts to test for differential usage of TSS's on the same gene between conditions.
+
+It starts with some general checks on the number of sites and number of regions used per gene.
+
+It continues with a heuristic estimate by correlation analysis: are the levels of alt TSS's correlated between conditions.
+
+The highlight is the use of a negative binomial count model to assess the differential TSS usage between conditions. This model is explained in detail. We do a multiple comparisons correction at 1% FDR.
+
+All the analysis is done on JEC21 data first. Then on H99 data, starting again from the beginning.
+
+
+```{r setup,warning=FALSE,message=FALSE,echo=FALSE,cache=FALSE}
+knitr::opts_chunk$set(warning=FALSE,message=FALSE,echo=FALSE,cache=TRUE,
+                      results="hide",
+                      fig.path="figure/TSS_alt_quant-",
+                      cache.path="cache/TSS_alt_quant-")
+library(tidyverse)
+library(MASS)
+select <- dplyr::select
+library(broom)
+library(cowplot)
+library(pheatmap)
+library(qvalue)
+theme_set(theme_cowplot() + theme(strip.background=element_blank()))
+```
+
+```{r figure_helpers}
+mybreaks = (1:9 * 10^rep(-1:5,each=9))
+mylabels = mybreaks
+mylabels[ c( c(3,4,6,7,8,9),c(3,4,6,7,8,9)+9,
+             c(3,4,6,7,8,9)+18,c(3,4,6,7,8,9)+27,
+             c(3,4,6,7,8,9)+36,c(3,4,6,7,8,9)+45,c(3,4,6,7,8,9)+54 ) ] <- ""
+scale_y_log10nicer <- function(name = waiver(), 
+                               breaks=mybreaks, 
+                               labels=mylabels,...) {
+    scale_y_log10(name=name,breaks=breaks,labels=labels,...)
+}
+
+plot_altcountC <- function(df,Gname) {
+    ggplot(data=filter(df,Gene_name==Gname),
+           aes(x=Condition,y=Count,
+               shape=Rep,colour=factor(Site))) +
+        geom_point(position=position_dodge(width = 0.4)) + 
+        scale_colour_brewer("Site",palette = "Set1") +
+        scale_y_continuous(expand=c(0.04,0.04)) + 
+        expand_limits(y=0) +
+        labs(title=Gname) + 
+        theme(axis.text.x=element_text(angle=90,vjust=0.5),
+              axis.title.x=element_blank())
+}
+
+plot_altcountS <- function(df,Gname) {
+    ggplot(data=filter(df,Gene_name==Gname) %>%
+               unite(Sample,Strain,Condition) %>%
+               mutate(Sample=factor(Sample,
+                                    levels=JEC21_TSS_samples_norep)),
+           aes(x=Sample,y=Count,
+               shape=Rep,colour=factor(Site))) +
+        geom_point(position=position_dodge(width = 0.4)) + 
+        scale_colour_brewer("Site",palette = "Set1") +
+        scale_y_continuous(expand=c(0.04,0.04)) + 
+        expand_limits(y=0) +
+        labs(title=Gname) + 
+        theme(axis.text.x=element_text(angle=90,vjust=0.5),
+              axis.title.x=element_blank())
+}
+```
+
+
+# JEC21
+
+## Load TSS cts
+
+```{r load_TSScts}
+# setwd("/Users/edwardwallace/Dropbox (Drummond Lab)/MiscProjects/RibosomeProfiling_Madhani/Janbon_annotations/scripts_RNA_quant/")
+
+JEC21_TSScts <- read_tsv("../data/united/JEC21.TSStable.replicat.10.no_zero.notNorm.txt") %>%
+    separate(name,c("Gene_name","Site"))
+
+melt_JEC21_TSScts <- gather(JEC21_TSScts,Sample,Count,-(Gene_name:location)) %>%
+    separate(Sample,c("Strain","Condition","Rep"),sep="_") %>%
+    mutate(Strain=factor(Strain, 
+                         levels=c("WT","upf1") ),
+           Condition=factor(Condition, 
+                            levels=c("Expo30","Expo37","Stat30","Stat37"))
+           )
+JEC21_TSS_samples <- expand.grid(Strain=c("WT","upf1") ,
+                            Condition=c("Expo30","Expo37","Stat30","Stat37"),
+                            Rep=c("a","b","c") ) %>%
+    arrange(Strain,Condition,Rep) %>%
+    unite(Sample,Strain,Condition,Rep) %>%
+    .$Sample %>%
+    .[1:21]
+
+JEC21_TSS_samples_norep <- expand.grid(Strain=c("WT","upf1") ,
+                            Condition=c("Expo30","Expo37","Stat30","Stat37")) %>%
+    arrange(Strain,Condition) %>%
+    unite(Sample,Strain,Condition) %>%
+    .$Sample %>%
+    .[1:7]
+```
+
+## Plot number of distinct counts (and genomic locations) by Gene name
+
+```{r summarize_TSScts,dependson="load_TSScts",fig.width=3,fig.height=1.5}
+JEC21_nTSS <- 
+    JEC21_TSScts %>%
+    mutate(Tot=rowSums(select(.,JEC21_TSS_samples))) %>%
+    group_by(Gene_name) %>%
+    summarize(nSites=n_distinct(Site),
+              nLocations=n_distinct(location),
+              Tot=sum(Tot))
+
+ggplot(data=JEC21_nTSS,aes(x=nSites)) + geom_histogram(binwidth=1) + labs(x="nSites, JEC21",y="nGenes")
+ggplot(data=JEC21_nTSS,aes(x=nLocations)) + geom_histogram(binwidth=1) + labs(x="nLocations, JEC21",y="nGenes")
+ggplot(data=JEC21_nTSS,aes(x=Tot)) +
+    geom_density(kernel="rectangular",adjust=0.5) + 
+    scale_x_log10("Total counts, JEC21")
+
+JEC21_TSS_byGene <- 
+    melt_JEC21_TSScts %>%
+    group_by(Gene_name,Condition,Rep) %>%
+    summarize(Count=sum(Count))
+    
+```
+
+## Correlation analysis
+
+```{r top2corr_TSScts,dependson="load_TSScts",fig.width=3,fig.height=1.5}
+top2corr <- function(df,mynames=JEC21_TSS_samples) {
+    data.frame( cor2 = 
+    cor(as.numeric(df[mynames][1,]),as.numeric(df[mynames][2,])) 
+    )
+}
+    
+JEC21_TSS_2corr <- 
+    JEC21_TSScts %>%
+    # head(n=100) %>%
+    mutate(Tot=rowSums(select(.,JEC21_TSS_samples))) %>%
+    arrange(desc(Tot)) %>%
+    group_by(Gene_name) %>%
+    do(top2corr(.)) %>%
+    ungroup()
+
+```
+
+### There is a wide range of correlations between the top-2 most-used TSS's
+
+```{r plot_top2corr_TSScts,dependson="top2corr_TSScts",fig.width=3,fig.height=1.5}
+
+ggplot(data=JEC21_TSS_2corr,aes(x=cor2)) + 
+    geom_density(kernel="rectangular",adjust=0.5) +
+    scale_x_continuous("corr. of top-2 TSS counts, JEC21",
+                       limits=c(-1,1),expand=c(0.01,0.01))
+```
+
+Why? Many negative correlations. 
+
+
+### Plot counts for some genes with Highly-correlated TSS usage
+
+```{r plot_JEC21_2corrTSS,dependson="top2corr_JEC21TSScts",fig.width=3,fig.height=3,results="show"}
+JEC21_TSS_2corr %>%
+    filter(cor2 > 0.95) %>%
+    left_join(JEC21_nTSS) %>%
+    arrange(desc(Tot))
+
+plot_altcountS(melt_JEC21_TSScts,"CNC06940")
+
+plot_altcountS(melt_JEC21_TSScts,"CNA04360")
+
+plot_altcountS(melt_JEC21_TSScts,"CNI00990")
+
+plot_altcountS(melt_JEC21_TSScts,"CND00150")
+
+```
+
+### Plot counts for some genes with anti-correlated TSS usage
+
+```{r plot_JEC21_2anticorrTSS,dependson="top2corr_JEC21TSScts",fig.width=3,fig.height=3,results="show"}
+JEC21_TSS_2corr %>%
+    filter(cor2 < -0.5) %>%
+    left_join(JEC21_nTSS) %>%
+    arrange(desc(Tot))
+
+plot_altcountS(melt_JEC21_TSScts,"CNA08250")
+plot_altcountS(melt_JEC21_TSScts,"CNF04420")
+plot_altcountS(melt_JEC21_TSScts,"CNN00330")
+
+plot_altcountS(melt_JEC21_TSScts,"CNN00340")
+plot_altcountS(melt_JEC21_TSScts,"CND04780")
+plot_altcountS(melt_JEC21_TSScts,"CNC05950")
+
+```
+
+
+
+### Correlation for core 4 conditions, (30C, 37C) x (Expo, Stat)
+
+```{r JEC21_top2corr4cond_TSScts,dependson="load_TSScts",fig.width=3.5,fig.height=1.5}
+Fourcond_TSS_samples <- c("WT_Expo30_a","WT_Expo30_b","WT_Expo30_c",
+                          "WT_Expo37_a","WT_Expo37_b","WT_Expo37_c",
+                          "WT_Stat30_a","WT_Stat30_b","WT_Stat30_c",
+                          "WT_Stat37_a","WT_Stat37_b","WT_Stat37_c")
+    
+JEC21_TSS_2corr4 <- 
+    JEC21_TSScts %>%
+    # head(n=100) %>%
+    mutate(Tot=rowSums(select(.,Fourcond_TSS_samples))) %>%
+    arrange(desc(Tot)) %>%
+    group_by(Gene_name) %>%
+    do(top2corr(.,mynames=Fourcond_TSS_samples)) %>%
+    ungroup()
+
+JEC21_TSS_4hict <- 
+    JEC21_TSScts %>%
+    mutate(Tot=rowSums(select(.,Fourcond_TSS_samples))) %>%
+    group_by(Gene_name) %>%
+    summarize(Tot=sum(Tot)) %>%
+    arrange(desc(Tot)) %>%
+    head(n=700)
+
+JEC21_TSS_2corr4hi <- 
+    JEC21_TSS_4hict %>%
+    left_join(JEC21_TSScts) %>%
+    mutate(Tot=rowSums(select(.,Fourcond_TSS_samples))) %>%
+    arrange(desc(Tot)) %>%
+    group_by(Gene_name) %>%
+    do(top2corr(.,mynames=Fourcond_TSS_samples)) %>%
+    ungroup()
+```
+
+### Highly-expressed genes have more highly correlated TSS counts
+
+```{r plot_top2corr4_JEC21_TSScts,dependson="JEC21_top2corr4cond_TSScts",fig.width=3.5,fig.height=2}
+
+ggplot(data=JEC21_TSS_2corr4,aes(x=cor2)) + 
+    geom_density(aes(colour="all"),
+                 kernel="rectangular",adjust=0.5,size=1) +
+    geom_density(data=JEC21_TSS_2corr4 %>% right_join(JEC21_TSS_4hict),
+                 aes(colour="top 10%"),
+                 kernel="rectangular",adjust=0.5,size=1) +
+    scale_x_continuous("corr. of top-2 TSS counts, JEC21 core",
+                       limits=c(-1,1),expand=c(0.01,0.01)) +
+    scale_y_continuous("density",expand=c(0.01,0.01)) +
+    scale_colour_manual("mRNAs",values=c("all"="grey40","top 10%"="blue") ) + 
+    theme(axis.text.y=element_blank(),
+          axis.title.y=element_blank(),
+          axis.ticks.y = element_blank(),
+          axis.line.y = element_blank(),
+          legend.position=c(0,0.80))
+```
+
+
+### Sample correlated and anti-correlated TSS
+
+For CNC06940/RPL15, correlated. CNF04420/CAR1, anti-correlated
+
+```{r plot_JEC21_2samplecorrTSS,dependson="top2corr_JEC21TSScts",fig.width=3,fig.height=3,results="show"}
+# JEC21_TSS_2corr %>%
+#     filter(cor2 < -0.5) %>%
+#     left_join(JEC21_nTSS) %>%
+#     arrange(desc(Tot))
+# 
+# plot_altcountS(melt_JEC21_TSScts,"CNA08250")
+# plot_altcountS(melt_JEC21_TSScts,"CNF04420")
+# plot_altcountS(melt_JEC21_TSScts,"CNN00330")
+# 
+# plot_altcountS(melt_JEC21_TSScts,"CNN00340")
+# plot_altcountS(melt_JEC21_TSScts,"CND04780")
+# plot_altcountS(melt_JEC21_TSScts,"CNC05950")
+
+plot_altcountS(melt_JEC21_TSScts %>% filter(Strain=="WT"),
+               "CNC06940")
+
+plot_altcountS(melt_JEC21_TSScts %>% filter(Strain=="WT"),
+               "CNF04420")
+
+plot_altcountS(melt_JEC21_TSScts %>% filter(Strain=="WT"),
+               "CNC03460")
+
+
+```
+
+
+
+
+## JEC21, Statistical model for differential alternate TSS usage between conditions
+
+### Model description
+
+This model focuses only on the *relative* usage of different TSS's changing *between conditions*. It does this by factoring out changes in the gene-level usage, within a statistical model incorporating count noise.
+
+For each gene, we take a negative binomial distribution of counts $x_{csi}$ at each TSS (site, $s$), in each condition ($t$), for each replicate $i$:
+$$x_{sti} \sim Negbin( \exp( \alpha_{ti} + \beta_{ts} ), \theta )$$
+
+Here the coefficients $\alpha$ track different total counts between replicates for each gene. The $\beta$ coefficients track different usage between sites at each condition.
+
+The dispersion parameter $\theta$ estimates how much more dispersed the counts are relative to a poisson model. A $NegBin(\mu, \theta)$ variable has mean $\mu$ and variance $\mu + \mu^2/\theta$.
+We use the implementation of negative binomial with log link function from the MASS package's negative.binomial function, and the glm function in base R to fit. 
+
+To estimate the value of $\theta$ from the whole dataset, we estimate overdispersion of counts from 10 random subsets of single-site genes across conditions.
+
+Later, to control the false discovery rate after testing thousands of genes, we will use the Benjamini-Hochberg criterion applied to the p-values of coefficients.
+
+#### Example data
+
+The data look like this, for a sample gene CNA00250/RPL9, so 12 data points = 2 sites x 2 conditions x 3 replicates. 
+
+```{r negbinmodel_sample_data,results="show",fig.width=3,fig.height=3}
+theta_approx = 87
+
+JEC21_sample_cts <- 
+    melt_JEC21_TSScts %>% 
+    filter(Condition %in% c("Expo30","Expo37"),Strain == "WT") %>%
+    filter( Gene_name %in% c("CNA00250") ) %>%
+    mutate(Site=factor(Site), Rep=factor(Rep)) %>%
+    select(Gene_name,Site,Condition,Rep,Count)
+JEC21_sample_cts
+
+plot_altcountC(JEC21_sample_cts,Gname = "CNA00250")
+
+# plot_altcountC(melt_JEC21_TSScts,Gname = "CNA00250")
+
+```
+
+#### Example fit
+
+The fit to this example data has coefficients (conditions 30, 37 degrees centigrade; replicates a,b,c; sites 1,2). We give the names of the coefficients both in accordance with the model above, and also as automatically assigned by R's glm function.
+
+```{r negbinmodel_sample_fit,dependson="negbinmodel_sample_data",results="show"}
+JEC21_sample_fit <- glm(formula=Count~Condition:Rep+Site*Condition, 
+              data=JEC21_sample_cts, 
+              family = negative.binomial(theta=theta_approx), link = "log", 
+              control = glm.control(maxit=100))
+
+
+JEC21_sample_fit %>% 
+    broom::tidy() %>%
+    mutate(coeff=c("a_{30,a}","b_{30,2}","a_{37,a} - a_{30,a}",
+                   "a_{30,b} - a_{30,a}","a_{37,b} - a_{30,a}",
+                   "a_{30,c} - a_{30,a}","a_{37,c} - a_{30,a}",
+                   "b_{37,2} - b_{30,2}") ) %>%
+    select(coeff,term,estimate,std.error,p.value)
+```
+
+The key question for differential alt usage is if $$ \beta_{37,2} - \beta_{30,2} $$ i.e. ConditionExpo37:Site2, is significant and substantial. For this gene, the difference is big, as we can see from the graph, and siggnificant as we see from the p value of 0.0017.
+
+
+The fit has 8 coefficients for 12 data points, so 4 degrees of freedom:
+
+```{r negbinmodel_sample_fitglance,dependson="negbinmodel_sample_fit",results="show"}
+JEC21_sample_fit %>% broom::glance()
+```
+
+
+### Estimate theta (negative binomial dispersion) for 10 subsets of 50 genes
+
+```{r negbin_AltTSS_functions}
+
+theta_negbin_sample <- function(n=100,mydata=melt_TSScts,mygenes=Gn_1site_JEC21)  {
+    nbfit <- 
+        glm.nb(Count~Condition:Rep + Gene_name:Condition,
+               data=mydata %>% 
+                   filter( Gene_name %in% base::sample(mygenes,n) ) %>%
+                   mutate(Site=factor(Site), Rep=factor(Rep)) %>%
+                   select(Gene_name,Site,Condition,Rep,Count)
+        )
+    return( glance(nbfit) %>%
+                mutate(theta=nbfit$theta,theta.se=nbfit$SE.theta) 
+    )
+}
+
+getfdr <- function(pval,fdr.level=0.01) {
+    qvalue(pval, lambda = 0, fdr.level=fdr.level) %>%
+        .$significant
+}
+
+fitNegbinAltTSSonegene <-
+    function(databit,
+             formula=Count~Condition:Rep+Site*Condition,
+             mytheta=theta_H99_TSScts_1site) {
+    glm(formula=formula, data=databit, 
+        family = negative.binomial(theta=mytheta), link = "log", 
+        control = glm.control(maxit=100)) %>%
+        broom::tidy()
+}
+
+
+```
+
+
+```{r JEC21_nbtheta_1site,dependson=c("summarize_JEC21TSScts","negbin_AltTSS_functions")}
+
+Gn_1site_JEC21  <- JEC21_nTSS %>% 
+    filter(nSites == 1) %>%
+    .$Gene_name
+
+
+negbin_sample_results_JEC21 <- 
+    plyr::ldply(1:10,function(i) { 
+        theta_negbin_sample(n=100,
+                            mydata=melt_JEC21_TSScts %>%
+                                filter(Strain == "WT"),
+                            mygenes=Gn_1site_JEC21) 
+        })
+
+theta_JEC21_TSScts_1site <- mean(negbin_sample_results_JEC21$theta)
+
+
+```
+
+
+### Fit negative binomial model to counts for each alt-TSS gene separately
+
+```{r JEC21_fitNegbin,dependson="summarize_JEC21TSScts"}
+
+nbfits_2plus_JEC21_Expo37vsExpo30 <- 
+    JEC21_nTSS %>% 
+    filter(nSites >= 2) %>%
+    left_join(melt_JEC21_TSScts) %>% 
+    filter(Condition %in% c("Expo30","Expo37"),Strain == "WT") %>%
+    # filter( Gene_name %in% c("CNAG_01019","CNAG_00121") ) %>%
+    mutate(Site=factor(Site), Rep=factor(Rep)) %>%
+    select(Gene_name,nSites,Site,Condition,Rep,Count) %>%
+    group_by(Gene_name) %>%
+    do(fitNegbinAltTSSonegene(.,mytheta=theta_JEC21_TSScts_1site))
+
+nbfits_2plus_JEC21_Stat30vsExpo30 <- 
+    JEC21_nTSS %>% 
+    filter(nSites >= 2) %>%
+    left_join(melt_JEC21_TSScts) %>% 
+    filter(Condition %in% c("Expo30","Stat30"),Strain == "WT") %>%
+    mutate(Site=factor(Site), Rep=factor(Rep)) %>%
+    select(Gene_name,nSites,Site,Condition,Rep,Count) %>%
+    group_by(Gene_name) %>%
+    do(fitNegbinAltTSSonegene(.,mytheta=theta_JEC21_TSScts_1site))
+
+nbfits_2plus_JEC21_Stat37vsExpo37 <- 
+    JEC21_nTSS %>% 
+    filter(nSites >= 2) %>%
+    left_join(melt_JEC21_TSScts) %>% 
+    filter(Condition %in% c("Stat37","Expo37"),Strain == "WT") %>%
+    mutate(Site=factor(Site), Rep=factor(Rep)) %>%
+    select(Gene_name,nSites,Site,Condition,Rep,Count) %>%
+    group_by(Gene_name) %>%
+    do(fitNegbinAltTSSonegene(.,mytheta=theta_JEC21_TSScts_1site))
+
+nbfits_2plus_JEC21_Stat37vsStat30 <- 
+    JEC21_nTSS %>% 
+    filter(nSites >= 2) %>%
+    left_join(melt_JEC21_TSScts) %>% 
+    filter(Condition %in% c("Stat30","Stat37"),Strain == "WT") %>%
+    mutate(Site=factor(Site), Rep=factor(Rep)) %>%
+    select(Gene_name,nSites,Site,Condition,Rep,Count) %>%
+    group_by(Gene_name) %>%
+    do(fitNegbinAltTSSonegene(.,mytheta=theta_JEC21_TSScts_1site))
+```
+
+### Alternate TSS usage at Expo 30
+
+#### p-values from this are nowhere near uniformly distributed
+
+```{r JEC21_altTSS_pval_dist,dependson="JEC21_fitNegbin",fig.width=3,fig.height=1.5}
+ggplot(data=nbfits_2plus_JEC21_Expo37vsExpo30 %>% 
+           filter(term %in% c("Site2","Site3","Site4","Site5")) %>%
+           ungroup(),
+       aes(x=p.value)) + 
+    geom_density(kernel="rectangular",adjust=0.1)
+```
+
+This suggests that most alt sites are either very differentially used or very similarly used; there's not much middle ground.
+
+#### Volcano plot shows great variety in alt TSS usage
+
+```{r JEC21_altTSS_volcano,dependson="JEC21_fitNegbin",fig.width=4,fig.height=3}
+
+ggplot(data=nbfits_2plus_JEC21_Expo37vsExpo30 %>% 
+           filter(term %in% c("Site2","Site3","Site4","Site5")),
+       aes(x=estimate/ log(10),y=-log10(p.value))) + 
+    geom_point() +
+    scale_x_continuous("log10 diff usage site 1 vs others",
+                       limits=c(-3,3),oob=scales::squish)
+```
+
+### Alternate TSS usage at Expo 37C vs 30C
+
+#### p-values from this are nowhere near uniformly distributed either
+
+```{r JEC21_regTSSExpo37vsExpo30_pval_dist,dependson="JEC21_fitNegbin",fig.width=3,fig.height=1.5}
+Expo37_sitevals <- paste0("ConditionExpo37:",c("Site2","Site3","Site4","Site5"))
+
+ggplot(data=nbfits_2plus_JEC21_Expo37vsExpo30 %>% 
+           ungroup() %>%
+           filter(term %in% Expo37_sitevals),
+       aes(x=p.value)) + 
+    geom_density(kernel="rectangular",adjust=0.1)
+```
+
+#### Volcano plot with FDR control
+
+Coloured for significance at 1% FDR, Benjamini-Hochberg.
+
+```{r JEC21_regTSSExpo37vsExpo30_volcano,dependson="JEC21_fitNegbin",fig.width=4,fig.height=3}
+Expo37_regTSSall <- nbfits_2plus_JEC21_Expo37vsExpo30 %>% 
+           filter(term %in% Expo37_sitevals) %>%
+           ungroup() %>%
+          mutate(sig.FDR = getfdr(p.value))
+
+write( Expo37_regTSSall %>% filter(sig.FDR) %>% .$Gene_name %>% unique(),
+       file = "../results/alt_usage_calls_negbin/TSS_JEC21_regulatedsites_Expo37vsExpo30_WT.txt")
+
+ggplot(data=Expo37_regTSSall,
+       aes(x=estimate/log(10),y=-log10(p.value),colour=sig.FDR)) + 
+    geom_point() +
+    scale_x_continuous("log10 diff usage in Expo37C",
+                       limits=c(-3,3),oob=scales::squish) +
+    scale_colour_manual(values=c("TRUE"="blue","FALSE"="grey50")) + 
+    theme(legend.position="none")
+```
+
+#### Top hits of stat model
+
+```{r JEC21_regTSSExpo37vsExpo30_toplist,dependson="JEC21_regTSSExpo37vsExpo30_volcano",results="show"}
+JEC21_regTSSExpo37vsExpo30_toplist <-
+    Expo37_regTSSall %>%
+    filter(sig.FDR) %>%
+    mutate(log10abs = abs(estimate)/log(10)) %>%
+    left_join(JEC21_nTSS) %>%
+    select(Gene_name,term,Tot,log10abs,p.value) %>%
+    arrange(desc(Tot))
+
+JEC21_regTSSExpo37vsExpo30_toplist
+```
+
+#### Stat model indeed identifies TSS's that are differentially used 
+
+```{r JEC21_plot_regTSSExpo37vsExpo30_toplist,dependson="JEC21_regTSSExpo37vsExpo30_toplist",fig.width=3,fig.height=3}
+
+plot_altcountS(melt_JEC21_TSScts,Gname = JEC21_regTSSExpo37vsExpo30_toplist$Gene_name[1])
+plot_altcountS(melt_JEC21_TSScts,Gname = JEC21_regTSSExpo37vsExpo30_toplist$Gene_name[2])
+plot_altcountS(melt_JEC21_TSScts,Gname = JEC21_regTSSExpo37vsExpo30_toplist$Gene_name[3])
+
+JEC21_regTSSExpo37vsExpo30_toplistabs <- JEC21_regTSSExpo37vsExpo30_toplist %>%
+    filter(Tot > 5000) %>%
+    arrange(desc(log10abs))
+
+plot_altcountS(melt_JEC21_TSScts,Gname = JEC21_regTSSExpo37vsExpo30_toplistabs$Gene_name[1])
+plot_altcountS(melt_JEC21_TSScts,Gname = JEC21_regTSSExpo37vsExpo30_toplistabs$Gene_name[2])
+plot_altcountS(melt_JEC21_TSScts,Gname = JEC21_regTSSExpo37vsExpo30_toplistabs$Gene_name[3])
+
+```
+
+
+### Alternate TSS usage at Stat vs Expo at 30C
+
+#### p-values from this are nowhere near uniformly distributed either
+
+```{r JEC21_regTSSStat30vsExpo30_pval_dist,dependson="JEC21_fitNegbin",fig.width=3,fig.height=1.5}
+Stat30_sitevals <- paste0("ConditionStat30:",c("Site2","Site3","Site4","Site5"))
+
+ggplot(data=nbfits_2plus_JEC21_Stat30vsExpo30 %>% 
+           ungroup() %>%
+           filter(term %in% Stat30_sitevals),
+       aes(x=p.value)) + 
+    geom_density(kernel="rectangular",adjust=0.1)
+```
+
+Coloured for significance at 1% FDR, Benjamini-Hochberg.
+
+```{r JEC21_regTSSStat30vsExpo30_volcano,dependson="JEC21_fitNegbin",fig.width=4,fig.height=3}
+
+Stat30_regTSSall <- nbfits_2plus_JEC21_Stat30vsExpo30 %>% 
+           filter(term %in% Stat30_sitevals) %>%
+           ungroup() %>%
+          mutate(sig.FDR = getfdr(p.value))
+
+write( Stat30_regTSSall %>% filter(sig.FDR) %>% .$Gene_name %>% unique(),
+       file = "../results/alt_usage_calls_negbin/TSS_JEC21_regulatedsites_Stat30vsExpo30_WT.txt")
+
+ggplot(data=Stat30_regTSSall,
+       aes(x=estimate/ log(10),y=-log10(p.value),colour=sig.FDR)) + 
+    geom_point() +
+    scale_x_continuous("log10 diff usage in Stat30C",
+                       limits=c(-3,3),oob=scales::squish) +
+    scale_colour_manual(values=c("TRUE"="blue","FALSE"="grey50")) + 
+    theme(legend.position="none")
+```
+
+
+#### Top hits of stat model
+
+```{r JEC21_regTSSStat30vsExpo30_toplist,dependson="JEC21_regTSSStat30vsExpo30_volcano",results="show"}
+
+
+JEC21_regTSSStat30vsExpo30_toplist <-
+    Stat30_regTSSall %>%
+    filter(sig.FDR) %>%
+    mutate(log10abs = abs(estimate)/log(10)) %>%
+    left_join(JEC21_nTSS) %>%
+    select(Gene_name,term,Tot,log10abs,p.value) %>%
+    arrange(desc(Tot))
+JEC21_regTSSStat30vsExpo30_toplist
+```
+
+#### Stat model indeed identifies TSS's that are differentially used 
+
+```{r JEC21_plot_regTSSStat30vsExpo30_toplist,dependson="JEC21_regTSSStat30vsExpo30_toplist",fig.width=3,fig.height=3}
+
+plot_altcountS(melt_JEC21_TSScts, Gname = JEC21_regTSSStat30vsExpo30_toplist$Gene_name[1])
+plot_altcountS(melt_JEC21_TSScts, Gname = JEC21_regTSSStat30vsExpo30_toplist$Gene_name[2])
+plot_altcountS(melt_JEC21_TSScts, Gname = JEC21_regTSSStat30vsExpo30_toplist$Gene_name[3])
+
+JEC21_regTSSStat30vsExpo30_toplistabs <- JEC21_regTSSStat30vsExpo30_toplist %>%
+    filter(Tot > 5000) %>%
+    arrange(desc(log10abs))
+
+plot_altcountS(melt_JEC21_TSScts, Gname = JEC21_regTSSStat30vsExpo30_toplistabs$Gene_name[1])
+plot_altcountS(melt_JEC21_TSScts, Gname = JEC21_regTSSStat30vsExpo30_toplistabs$Gene_name[2])
+plot_altcountS(melt_JEC21_TSScts, Gname = JEC21_regTSSStat30vsExpo30_toplistabs$Gene_name[3])
+```
+
+### Stat37 vs Stat30
+
+#### Volcano plot with FDR control
+
+
+```{r JEC21_regTSSStat37vsStat30_volcano,dependson="JEC21_fitNegbin",fig.width=4,fig.height=3}
+
+Stat37_sitevals <- paste0("ConditionStat37:",c("Site2","Site3","Site4","Site5"))
+
+Stat37vsStat30_regTSSall <- nbfits_2plus_JEC21_Stat37vsStat30 %>% 
+           filter(term %in% Stat37_sitevals) %>%
+           ungroup() %>%
+          mutate(sig.FDR = getfdr(p.value))
+
+write( Stat37vsStat30_regTSSall %>% filter(sig.FDR) %>% .$Gene_name %>% unique(),
+       file = "../results/alt_usage_calls_negbin/TSS_JEC21_regulatedsites_Stat37vsStat30_WT.txt")
+
+# ggplot(data=Stat37vsStat30_regTSSall,
+#        aes(x=estimate/log(10),y=-log10(p.value),colour=sig.FDR)) +
+#     geom_point() +
+#     scale_x_continuous("log10 diff usage, Stat 37 vs Stat 30",
+#                        limits=c(-3,3),oob=scales::squish) +
+#     scale_colour_manual(values=c("TRUE"="blue","FALSE"="grey50")) +
+#     theme(legend.position="none")
+```
+
+#### Top hits of stat model
+
+```{r JEC21_regTSSStat37vsStat30_toplist,dependson="JEC21_regTSSStat37vsStat30_volcano",results="show"}
+JEC21Stat37vsStat30_regTSS_toplist <-
+    Stat37vsStat30_regTSSall %>%
+    filter(sig.FDR) %>%
+    mutate(log10abs = abs(estimate)/log(10)) %>%
+    left_join(JEC21_nTSS) %>%
+    select(Gene_name,term,Tot,log10abs,p.value) %>%
+    arrange(desc(Tot))
+
+JEC21Stat37vsStat30_regTSS_toplist
+```
+
+#### Stat model indeed identifies TSS's that are differentially used 
+
+```{r JEC21_plot_regTSSStat37vsStat30_toplist,dependson="JEC21_regTSSExpo37vsExpo30_toplist",fig.width=3,fig.height=3}
+
+plot_altcountS(melt_JEC21_TSScts,Gname = JEC21Stat37vsStat30_regTSS_toplist$Gene_name[1])
+plot_altcountS(melt_JEC21_TSScts,Gname = JEC21Stat37vsStat30_regTSS_toplist$Gene_name[2])
+plot_altcountS(melt_JEC21_TSScts,Gname = JEC21Stat37vsStat30_regTSS_toplist$Gene_name[3])
+
+JEC21Stat37vsStat30_regTSS_toplistabs <- JEC21Stat37vsStat30_regTSS_toplist %>%
+    filter(Tot > 5000) %>%
+    arrange(desc(log10abs))
+
+plot_altcountS(melt_JEC21_TSScts,Gname = JEC21Stat37vsStat30_regTSS_toplistabs$Gene_name[1])
+plot_altcountS(melt_JEC21_TSScts,Gname = JEC21Stat37vsStat30_regTSS_toplistabs$Gene_name[2])
+plot_altcountS(melt_JEC21_TSScts,Gname = JEC21Stat37vsStat30_regTSS_toplistabs$Gene_name[3])
+
+```
+
+### Stat37 vs Expo37
+
+#### Volcano plot with FDR control
+
+
+```{r JEC21_regTSSStat37vsExpo37_volcano,dependson="JEC21_fitNegbin",fig.width=4,fig.height=3}
+
+Stat37_sitevals <- paste0("ConditionStat37:",c("Site2","Site3","Site4","Site5"))
+
+Stat37vsExpo37_regTSSall <- nbfits_2plus_JEC21_Stat37vsExpo37 %>% 
+           filter(term %in% Stat37_sitevals) %>%
+           ungroup() %>%
+          mutate(sig.FDR = getfdr(p.value))
+
+write( Stat37vsExpo37_regTSSall %>% filter(sig.FDR) %>% .$Gene_name %>% unique(),
+       file = "../results/alt_usage_calls_negbin/TSS_JEC21_regulatedsites_Stat37vsExpo37_WT.txt")
+
+# ggplot(data=Stat37vsExpo37_regTSSall,
+#        aes(x=estimate/log(10),y=-log10(p.value),colour=sig.FDR)) +
+#     geom_point() +
+#     scale_x_continuous("log10 diff usage, Stat 37 vs Stat 30",
+#                        limits=c(-3,3),oob=scales::squish) +
+#     scale_colour_manual(values=c("TRUE"="blue","FALSE"="grey50")) +
+#     theme(legend.position="none")
+```
+
+#### Top hits of stat model
+
+```{r JEC21_regTSSStat37vsExpo37_toplist,dependson="JEC21_regTSSStat37vsExpo37_volcano",results="show"}
+JEC21Stat37vsExpo37_regTSS_toplist <-
+    Stat37vsExpo37_regTSSall %>%
+    filter(sig.FDR) %>%
+    mutate(log10abs = abs(estimate)/log(10)) %>%
+    left_join(JEC21_nTSS) %>%
+    select(Gene_name,term,Tot,log10abs,p.value) %>%
+    arrange(desc(Tot))
+
+JEC21Stat37vsExpo37_regTSS_toplist
+```
+
+#### Stat model indeed identifies TSS's that are differentially used 
+
+```{r JEC21_plot_regTSSStat37vsExpo37_toplist,dependson="JEC21_regTSSExpo37vsExpo30_toplist",fig.width=3,fig.height=3}
+
+plot_altcountS(melt_JEC21_TSScts,Gname = JEC21Stat37vsExpo37_regTSS_toplist$Gene_name[1])
+plot_altcountS(melt_JEC21_TSScts,Gname = JEC21Stat37vsExpo37_regTSS_toplist$Gene_name[2])
+plot_altcountS(melt_JEC21_TSScts,Gname = JEC21Stat37vsExpo37_regTSS_toplist$Gene_name[3])
+
+JEC21Stat37vsExpo37_regTSS_toplistabs <- JEC21Stat37vsExpo37_regTSS_toplist %>%
+    filter(Tot > 5000) %>%
+    arrange(desc(log10abs))
+
+plot_altcountS(melt_JEC21_TSScts,Gname = JEC21Stat37vsExpo37_regTSS_toplistabs$Gene_name[1])
+plot_altcountS(melt_JEC21_TSScts,Gname = JEC21Stat37vsExpo37_regTSS_toplistabs$Gene_name[2])
+plot_altcountS(melt_JEC21_TSScts,Gname = JEC21Stat37vsExpo37_regTSS_toplistabs$Gene_name[3])
+
+```
+
+
+### Calculate alternate TSS usage at upf1 vs WT
+
+```{r JEC21_fitNegbin_upf1vsWT,dependson="summarize_JEC21TSScts"}
+
+nbfits_2plus_JEC21_upf1vsWT_Expo30 <- 
+    JEC21_nTSS %>% 
+    filter(nSites >= 2) %>%
+    left_join(melt_JEC21_TSScts) %>% 
+    filter(Condition %in% c("Expo30"),Strain %in% c("WT","upf1")) %>%
+    mutate(Site=factor(Site), Rep=factor(Rep)) %>%
+    select(Gene_name,nSites,Site,Condition=Strain,Rep,Count) %>%
+    group_by(Gene_name) %>%
+    do(fitNegbinAltTSSonegene(.,mytheta=theta_JEC21_TSScts_1site))
+
+nbfits_2plus_JEC21_upf1vsWT_Expo37 <- 
+    JEC21_nTSS %>% 
+    filter(nSites >= 2) %>%
+    left_join(melt_JEC21_TSScts) %>% 
+    filter(Condition %in% c("Expo37"),Strain %in% c("WT","upf1")) %>%
+    mutate(Site=factor(Site), Rep=factor(Rep)) %>%
+    select(Gene_name,nSites,Site,Condition=Strain,Rep,Count) %>%
+    group_by(Gene_name) %>%
+    do(fitNegbinAltTSSonegene(.,mytheta=theta_JEC21_TSScts_1site))
+
+nbfits_2plus_JEC21_upf1vsWT_Stat30 <- 
+    JEC21_nTSS %>% 
+    filter(nSites >= 2) %>%
+    left_join(melt_JEC21_TSScts) %>% 
+    filter(Condition %in% c("Stat30"),Strain %in% c("WT","upf1")) %>%
+    mutate(Site=factor(Site), Rep=factor(Rep)) %>%
+    select(Gene_name,nSites,Site,Condition=Strain,Rep,Count) %>%
+    group_by(Gene_name) %>%
+    do(fitNegbinAltTSSonegene(.,mytheta=theta_JEC21_TSScts_1site))
+
+upf1_sitevals <- paste0("Conditionupf1:",c("Site2","Site3","Site4","Site5"))
+
+```
+
+### Alternate TSS usage at upf1 vs WT, Expo 30C
+
+#### p-values from this are nowhere near uniformly distributed either
+
+```{r JEC21_regTSSupf1vsWT_Expo30_pval_dist,dependson="JEC21_fitNegbin_upf1vsWT",fig.width=3,fig.height=1.5}
+
+ggplot(data=nbfits_2plus_JEC21_upf1vsWT_Expo30 %>% 
+           ungroup() %>%
+           filter(term %in% upf1_sitevals),
+       aes(x=p.value)) + 
+    geom_density(kernel="rectangular",adjust=0.1)
+```
+
+#### Volcano plot with FDR control
+
+Coloured for significance at 1% FDR, Benjamini-Hochberg.
+
+```{r JEC21_regTSSupf1vsWT_Expo30_volcano,dependson="JEC21_fitNegbin_upf1vsWT",fig.width=4,fig.height=3}
+upf1vsWT_Expo30_regTSSall <- nbfits_2plus_JEC21_upf1vsWT_Expo30 %>% 
+           filter(term %in% upf1_sitevals) %>%
+           ungroup() %>%
+          mutate(sig.FDR = getfdr(p.value))
+
+write( upf1vsWT_Expo30_regTSSall %>% filter(sig.FDR) %>% .$Gene_name %>% unique(),
+       file = "../results/alt_usage_calls_negbin/TSS_JEC21_regulatedsites_upf1vsWT_Expo30.txt")
+
+ggplot(data=upf1vsWT_Expo30_regTSSall,
+       aes(x=estimate/log(10),y=-log10(p.value),colour=sig.FDR)) + 
+    geom_point() +
+    scale_x_continuous("log10 diff usage in upf1 vs WT, Expo 30",
+                       limits=c(-3,3),oob=scales::squish) +
+    scale_colour_manual(values=c("TRUE"="blue","FALSE"="grey50")) + 
+    theme(legend.position="none")
+```
+
+#### Top hits of stat model
+
+```{r JEC21_regTSSupf1vsWT_Expo30_toplist,dependson="JEC21_regTSSupf1vsWT_Expo30_volcano",results="show"}
+JEC21_regTSSupf1vsWT_Expo30_toplist <-
+    upf1vsWT_Expo30_regTSSall %>%
+    filter(sig.FDR) %>%
+    mutate(log10abs = abs(estimate)/log(10)) %>%
+    left_join(JEC21_nTSS) %>%
+    select(Gene_name,term,Tot,log10abs,p.value) %>%
+    arrange(desc(Tot))
+
+JEC21_regTSSupf1vsWT_Expo30_toplist
+```
+
+#### Stat model indeed identifies TSS's that are differentially used 
+
+```{r JEC21_plot_regTSSupf1vsWT_Expo30_toplist,dependson="JEC21_regTSSupf1vsWT_Expo30_toplist",fig.width=3,fig.height=3}
+
+plot_altcountS(melt_JEC21_TSScts,Gname = JEC21_regTSSupf1vsWT_Expo30_toplist$Gene_name[1])
+plot_altcountS(melt_JEC21_TSScts,Gname = JEC21_regTSSupf1vsWT_Expo30_toplist$Gene_name[2])
+plot_altcountS(melt_JEC21_TSScts,Gname = JEC21_regTSSupf1vsWT_Expo30_toplist$Gene_name[3])
+
+JEC21_regTSSupf1vsWT_Expo30_toplistabs <- JEC21_regTSSupf1vsWT_Expo30_toplist %>%
+    filter(Tot > 5000) %>%
+    arrange(desc(log10abs))
+
+plot_altcountS(melt_JEC21_TSScts,Gname = JEC21_regTSSupf1vsWT_Expo30_toplistabs$Gene_name[1])
+plot_altcountS(melt_JEC21_TSScts,Gname = JEC21_regTSSupf1vsWT_Expo30_toplistabs$Gene_name[2])
+plot_altcountS(melt_JEC21_TSScts,Gname = JEC21_regTSSupf1vsWT_Expo30_toplistabs$Gene_name[3])
+
+```
+
+
+
+### Alternate TSS usage at upf1 vs WT, Expo 37C
+
+
+#### Volcano plot with FDR control
+
+Coloured for significance at 1% FDR, Benjamini-Hochberg.
+
+```{r JEC21_regTSSupf1vsWT_Expo37_volcano,dependson="JEC21_fitNegbin_upf1vsWT",fig.width=4,fig.height=3}
+upf1vsWT_Expo37_regTSSall <- nbfits_2plus_JEC21_upf1vsWT_Expo37 %>% 
+           filter(term %in% upf1_sitevals) %>%
+           ungroup() %>%
+          mutate(sig.FDR = getfdr(p.value))
+
+write( upf1vsWT_Expo37_regTSSall %>% filter(sig.FDR) %>% .$Gene_name %>% unique(),
+       file = "../results/alt_usage_calls_negbin/TSS_JEC21_regulatedsites_upf1vsWT_Expo37.txt")
+
+ggplot(data=upf1vsWT_Expo37_regTSSall,
+       aes(x=estimate/log(10),y=-log10(p.value),colour=sig.FDR)) + 
+    geom_point() +
+    scale_x_continuous("log10 diff usage in upf1 vs WT, Expo 37",
+                       limits=c(-3,3),oob=scales::squish) +
+    scale_colour_manual(values=c("TRUE"="blue","FALSE"="grey50")) + 
+    theme(legend.position="none")
+```
+
+#### Top hits of stat model
+
+```{r JEC21_regTSSupf1vsWT_Expo37_toplist,dependson="JEC21_regTSSupf1vsWT_Expo37_volcano",results="show"}
+JEC21_regTSSupf1vsWT_Expo37_toplist <-
+    upf1vsWT_Expo37_regTSSall %>%
+    filter(sig.FDR) %>%
+    mutate(log10abs = abs(estimate)/log(10)) %>%
+    left_join(JEC21_nTSS) %>%
+    select(Gene_name,term,Tot,log10abs,p.value) %>%
+    arrange(desc(Tot))
+
+JEC21_regTSSupf1vsWT_Expo37_toplist
+```
+
+#### Stat model indeed identifies TSS's that are differentially used 
+
+```{r JEC21_plot_regTSSupf1vsWT_Expo37_toplist,dependson="JEC21_regTSSupf1vsWT_Expo37_toplist",fig.width=3,fig.height=3}
+
+plot_altcountS(melt_JEC21_TSScts,Gname = JEC21_regTSSupf1vsWT_Expo37_toplist$Gene_name[1])
+plot_altcountS(melt_JEC21_TSScts,Gname = JEC21_regTSSupf1vsWT_Expo37_toplist$Gene_name[2])
+plot_altcountS(melt_JEC21_TSScts,Gname = JEC21_regTSSupf1vsWT_Expo37_toplist$Gene_name[3])
+
+JEC21_regTSSupf1vsWT_Expo37_toplistabs <- JEC21_regTSSupf1vsWT_Expo37_toplist %>%
+    filter(Tot > 5000) %>%
+    arrange(desc(log10abs))
+
+plot_altcountS(melt_JEC21_TSScts,Gname = JEC21_regTSSupf1vsWT_Expo37_toplistabs$Gene_name[1])
+plot_altcountS(melt_JEC21_TSScts,Gname = JEC21_regTSSupf1vsWT_Expo37_toplistabs$Gene_name[2])
+plot_altcountS(melt_JEC21_TSScts,Gname = JEC21_regTSSupf1vsWT_Expo37_toplistabs$Gene_name[3])
+
+```
+
+
+### Alternate TSS usage at upf1 vs WT, Stat 30C
+
+#### p-values from this are nowhere near uniformly distributed either
+
+```{r JEC21_regTSSupf1vsWT_Stat30_pval_dist,dependson="JEC21_fitNegbin_upf1vsWT",fig.width=3,fig.height=1.5}
+
+ggplot(data=nbfits_2plus_JEC21_upf1vsWT_Stat30 %>% 
+           ungroup() %>%
+           filter(term %in% upf1_sitevals),
+       aes(x=p.value)) + 
+    geom_density(kernel="rectangular",adjust=0.1)
+```
+
+#### Volcano plot with FDR control
+
+Coloured for significance at 1% FDR, Benjamini-Hochberg.
+
+```{r JEC21_regTSSupf1vsWT_Stat30_volcano,dependson="JEC21_fitNegbin_upf1vsWT",fig.width=4,fig.height=3}
+upf1vsWT_Stat30_regTSSall <- nbfits_2plus_JEC21_upf1vsWT_Stat30 %>% 
+           filter(term %in% upf1_sitevals) %>%
+           ungroup() %>%
+          mutate(sig.FDR = getfdr(p.value))
+
+write( upf1vsWT_Stat30_regTSSall %>% filter(sig.FDR) %>% .$Gene_name %>% unique(),
+       file = "../results/alt_usage_calls_negbin/TSS_JEC21_regulatedsites_upf1vsWT_Stat30.txt")
+
+ggplot(data=upf1vsWT_Stat30_regTSSall,
+       aes(x=estimate/log(10),y=-log10(p.value),colour=sig.FDR)) + 
+    geom_point() +
+    scale_x_continuous("log10 diff usage in upf1 vs WT, Stat 30",
+                       limits=c(-3,3),oob=scales::squish) +
+    scale_colour_manual(values=c("TRUE"="blue","FALSE"="grey50")) + 
+    theme(legend.position="none")
+```
+
+#### Top hits of stat model
+
+```{r JEC21_regTSSupf1vsWT_Stat30_toplist,dependson="JEC21_regTSSupf1vsWT_Stat30_volcano",results="show"}
+JEC21_regTSSupf1vsWT_Stat30_toplist <-
+    upf1vsWT_Stat30_regTSSall %>%
+    filter(sig.FDR) %>%
+    mutate(log10abs = abs(estimate)/log(10)) %>%
+    left_join(JEC21_nTSS) %>%
+    select(Gene_name,term,Tot,log10abs,p.value) %>%
+    arrange(desc(Tot))
+
+JEC21_regTSSupf1vsWT_Stat30_toplist
+```
+
+#### Stat model indeed identifies TSS's that are differentially used 
+
+```{r JEC21_plot_regTSSupf1vsWT_Stat30_toplist,dependson="JEC21_regTSSupf1vsWT_Stat30_toplist",fig.width=3,fig.height=3}
+
+plot_altcountS(melt_JEC21_TSScts,Gname = JEC21_regTSSupf1vsWT_Stat30_toplist$Gene_name[1])
+plot_altcountS(melt_JEC21_TSScts,Gname = JEC21_regTSSupf1vsWT_Stat30_toplist$Gene_name[2])
+plot_altcountS(melt_JEC21_TSScts,Gname = JEC21_regTSSupf1vsWT_Stat30_toplist$Gene_name[3])
+
+JEC21_regTSSupf1vsWT_Stat30_toplistabs <- JEC21_regTSSupf1vsWT_Stat30_toplist %>%
+    filter(Tot > 5000) %>%
+    arrange(desc(log10abs))
+
+plot_altcountS(melt_JEC21_TSScts,Gname = JEC21_regTSSupf1vsWT_Stat30_toplistabs$Gene_name[1])
+plot_altcountS(melt_JEC21_TSScts,Gname = JEC21_regTSSupf1vsWT_Stat30_toplistabs$Gene_name[2])
+plot_altcountS(melt_JEC21_TSScts,Gname = JEC21_regTSSupf1vsWT_Stat30_toplistabs$Gene_name[3])
+
+```
+
+
+
+## Alternate conditions, upf1 strain
+
+```{r JEC21_fitNegbin_upf1,dependson="summarize_JEC21TSScts"}
+
+nbfits_2plus_JEC21_Expo37vsExpo30_upf1 <- 
+    JEC21_nTSS %>% 
+    filter(nSites >= 2) %>%
+    left_join(melt_JEC21_TSScts) %>% 
+    filter(Condition %in% c("Expo30","Expo37"),Strain == "upf1") %>%
+    # filter( Gene_name %in% c("CNAG_01019","CNAG_00121") ) %>%
+    mutate(Site=factor(Site), Rep=factor(Rep)) %>%
+    select(Gene_name,nSites,Site,Condition,Rep,Count) %>%
+    group_by(Gene_name) %>%
+    do(fitNegbinAltTSSonegene(.,mytheta=theta_JEC21_TSScts_1site))
+
+nbfits_2plus_JEC21_Stat30vsExpo30_upf1 <- 
+    JEC21_nTSS %>% 
+    filter(nSites >= 2) %>%
+    left_join(melt_JEC21_TSScts) %>% 
+    filter(Condition %in% c("Expo30","Stat30"),Strain == "upf1") %>%
+    mutate(Site=factor(Site), Rep=factor(Rep)) %>%
+    select(Gene_name,nSites,Site,Condition,Rep,Count) %>%
+    group_by(Gene_name) %>%
+    do(fitNegbinAltTSSonegene(.,mytheta=theta_JEC21_TSScts_1site))
+
+```
+
+### Alternate TSS usage at Expo 37C vs 30C, upf1
+
+#### p-values from this are nowhere near uniformly distributed either
+
+```{r JEC21_regTSSExpo37vsExpo30_upf1_pval_dist,dependson="JEC21_fitNegbin",fig.width=3,fig.height=1.5}
+Expo37_sitevals <- paste0("ConditionExpo37:",c("Site2","Site3","Site4","Site5"))
+
+ggplot(data=nbfits_2plus_JEC21_Expo37vsExpo30_upf1 %>% 
+           ungroup() %>%
+           filter(term %in% Expo37_sitevals),
+       aes(x=p.value)) + 
+    geom_density(kernel="rectangular",adjust=0.1)
+```
+
+#### Volcano plot with FDR control
+
+Coloured for significance at 1% FDR, Benjamini-Hochberg.
+
+```{r JEC21_regTSSExpo37vsExpo30_upf1_volcano,dependson="JEC21_fitNegbin",fig.width=4,fig.height=3}
+Expo37_regTSSall <- nbfits_2plus_JEC21_Expo37vsExpo30_upf1 %>% 
+           filter(term %in% Expo37_sitevals) %>%
+           ungroup() %>%
+          mutate(sig.FDR = getfdr(p.value))
+
+write( Expo37_regTSSall %>% filter(sig.FDR) %>% .$Gene_name %>% unique(),
+       file = "../results/alt_usage_calls_negbin/TSS_JEC21_regulatedsites_Expo37vsExpo30_upf1.txt")
+
+ggplot(data=Expo37_regTSSall,
+       aes(x=estimate/log(10),y=-log10(p.value),colour=sig.FDR)) + 
+    geom_point() +
+    scale_x_continuous("log10 diff usage in Expo37C",
+                       limits=c(-3,3),oob=scales::squish) +
+    scale_colour_manual(values=c("TRUE"="blue","FALSE"="grey50")) + 
+    theme(legend.position="none")
+```
+
+#### Top hits of stat model
+
+```{r JEC21_regTSSExpo37vsExpo30_upf1_toplist,dependson="JEC21_regTSSExpo37vsExpo30_upf1_volcano",results="show"}
+JEC21_regTSSExpo37vsExpo30_upf1_toplist <-
+    Expo37_regTSSall %>%
+    filter(sig.FDR) %>%
+    mutate(log10abs = abs(estimate)/log(10)) %>%
+    left_join(JEC21_nTSS) %>%
+    select(Gene_name,term,Tot,log10abs,p.value) %>%
+    arrange(desc(Tot))
+
+JEC21_regTSSExpo37vsExpo30_upf1_toplist
+```
+
+#### Stat model indeed identifies TSS's that are differentially used 
+
+```{r JEC21_plot_regTSSExpo37vsExpo30_upf1_toplist,dependson="JEC21_regTSSExpo37vsExpo30_upf1_toplist",fig.width=3,fig.height=3}
+
+plot_altcountS(melt_JEC21_TSScts,Gname = JEC21_regTSSExpo37vsExpo30_upf1_toplist$Gene_name[1])
+plot_altcountS(melt_JEC21_TSScts,Gname = JEC21_regTSSExpo37vsExpo30_upf1_toplist$Gene_name[2])
+plot_altcountS(melt_JEC21_TSScts,Gname = JEC21_regTSSExpo37vsExpo30_upf1_toplist$Gene_name[3])
+
+JEC21_regTSSExpo37vsExpo30_upf1_toplistabs <- JEC21_regTSSExpo37vsExpo30_upf1_toplist %>%
+    filter(Tot > 5000) %>%
+    arrange(desc(log10abs))
+
+plot_altcountS(melt_JEC21_TSScts,Gname = JEC21_regTSSExpo37vsExpo30_upf1_toplistabs$Gene_name[1])
+plot_altcountS(melt_JEC21_TSScts,Gname = JEC21_regTSSExpo37vsExpo30_upf1_toplistabs$Gene_name[2])
+plot_altcountS(melt_JEC21_TSScts,Gname = JEC21_regTSSExpo37vsExpo30_upf1_toplistabs$Gene_name[3])
+
+```
+
+
+### Alternate TSS usage at Stat vs Expo at 30C, upf1
+
+#### p-values from this are nowhere near uniformly distributed either
+
+```{r JEC21_regTSSStat30vsExpo30_upf1_pval_dist,dependson="JEC21_fitNegbin_upf1",fig.width=3,fig.height=1.5}
+Stat30_sitevals <- paste0("ConditionStat30:",c("Site2","Site3","Site4","Site5"))
+
+ggplot(data=nbfits_2plus_JEC21_Stat30vsExpo30_upf1 %>% 
+           ungroup() %>%
+           filter(term %in% Stat30_sitevals),
+       aes(x=p.value)) + 
+    geom_density(kernel="rectangular",adjust=0.1)
+```
+
+Coloured for significance at 1% FDR, Benjamini-Hochberg.
+
+```{r JEC21_regTSSStat30vsExpo30_upf1_volcano,dependson="JEC21_fitNegbin",fig.width=4,fig.height=3}
+
+Stat30_regTSSall <- nbfits_2plus_JEC21_Stat30vsExpo30_upf1 %>% 
+           filter(term %in% Stat30_sitevals) %>%
+           ungroup() %>%
+          mutate(sig.FDR = getfdr(p.value))
+
+write( Stat30_regTSSall %>% filter(sig.FDR) %>% .$Gene_name %>% unique(),
+       file = "../results/alt_usage_calls_negbin/TSS_JEC21_regulatedsites_Stat30vsExpo30_upf1.txt")
+
+ggplot(data=Stat30_regTSSall,
+       aes(x=estimate/ log(10),y=-log10(p.value),colour=sig.FDR)) + 
+    geom_point() +
+    scale_x_continuous("log10 diff usage in Stat30C",
+                       limits=c(-3,3),oob=scales::squish) +
+    scale_colour_manual(values=c("TRUE"="blue","FALSE"="grey50")) + 
+    theme(legend.position="none")
+```
+
+
+#### Top hits of stat model
+
+```{r JEC21_regTSSStat30vsExpo30_upf1_toplist,dependson="JEC21_regTSSStat30vsExpo30_upf1_volcano",results="show"}
+
+
+JEC21_regTSSStat30vsExpo30_upf1_toplist <-
+    Stat30_regTSSall %>%
+    filter(sig.FDR) %>%
+    mutate(log10abs = abs(estimate)/log(10)) %>%
+    left_join(JEC21_nTSS) %>%
+    select(Gene_name,term,Tot,log10abs,p.value) %>%
+    arrange(desc(Tot))
+JEC21_regTSSStat30vsExpo30_upf1_toplist
+```
+
+#### Stat model indeed identifies TSS's that are differentially used 
+
+```{r JEC21_plot_regTSSStat30vsExpo30_upf1_toplist,dependson="JEC21_regTSSStat30vsExpo30_upf1_toplist",fig.width=3,fig.height=3}
+
+plot_altcountS(melt_JEC21_TSScts, Gname = JEC21_regTSSStat30vsExpo30_upf1_toplist$Gene_name[1])
+plot_altcountS(melt_JEC21_TSScts, Gname = JEC21_regTSSStat30vsExpo30_upf1_toplist$Gene_name[2])
+plot_altcountS(melt_JEC21_TSScts, Gname = JEC21_regTSSStat30vsExpo30_upf1_toplist$Gene_name[3])
+
+JEC21_regTSSStat30vsExpo30_upf1_toplistabs <- JEC21_regTSSStat30vsExpo30_upf1_toplist %>%
+    filter(Tot > 5000) %>%
+    arrange(desc(log10abs))
+
+plot_altcountS(melt_JEC21_TSScts, Gname = JEC21_regTSSStat30vsExpo30_upf1_toplistabs$Gene_name[1])
+plot_altcountS(melt_JEC21_TSScts, Gname = JEC21_regTSSStat30vsExpo30_upf1_toplistabs$Gene_name[2])
+plot_altcountS(melt_JEC21_TSScts, Gname = JEC21_regTSSStat30vsExpo30_upf1_toplistabs$Gene_name[3])
+```
+
+
+
+# H99
+
+## Load TSS cts
+
+```{r load_H99TSScts}
+# setwd("/Users/edwardwallace/Dropbox (Drummond Lab)/MiscProjects/RibosomeProfiling_Madhani/Janbon_annotations/scripts_RNA_quant/")
+
+H99_TSScts <- read_tsv("../data/united/H99.TSStable.replicat.10.no_zero.notNorm.txt") %>%
+    separate(name,c("CNAbit","namebit","Site")) %>%
+    unite(Gene_name,CNAbit,namebit)
+
+melt_H99_TSScts <- gather(H99_TSScts,Sample,Count,-(Gene_name:location)) %>%
+    separate(Sample,c("Strain","Condition","Rep"),sep="_") %>%
+    mutate(# Strain=factor(Strain, 
+           #             levels=c("WT","upf1") ),
+           Condition=factor(Condition, 
+                            levels=c("Expo30","Expo37","Stat30","Stat37"))
+           )
+H99_TSS_samples <- expand.grid(Strain="WT",
+                            Condition=c("Expo30","Expo37","Stat30","Stat37"),
+                            Rep=c("a","b","c") ) %>%
+    arrange(Strain,Condition,Rep) %>%
+    unite(Sample,Strain,Condition,Rep) %>%
+    .$Sample 
+```
+
+## Plot number of distinct counts (and genomic locations) by Gene name
+
+```{r summarize_H99TSScts,dependson="load_H99TSScts",fig.width=3,fig.height=1.5}
+H99_nTSS <- 
+    H99_TSScts %>%
+    mutate(Tot=rowSums(select(.,H99_TSS_samples))) %>%
+    group_by(Gene_name) %>%
+    summarize(nSites=n_distinct(Site),
+              nLocations=n_distinct(location),
+              Tot=sum(Tot))
+
+ggplot(data=H99_nTSS,aes(x=nSites)) + geom_histogram(binwidth=1) + labs(x="nSites, H99",y="nGenes")
+ggplot(data=H99_nTSS,aes(x=nLocations)) + geom_histogram(binwidth=1) + labs(x="nLocations, H99",y="nGenes")
+ggplot(data=H99_nTSS,aes(x=Tot)) + geom_density(kernel="rectangular",adjust=0.5) + scale_x_log10("Total counts, H99")
+
+H99_TSS_byGene <- 
+    melt_H99_TSScts %>%
+    group_by(Gene_name,Condition,Rep) %>%
+    summarize(Count=sum(Count))
+    
+```
+
+## Correlation analysis
+
+```{r top2corr_H99TSScts,dependson="load_H99TSScts",fig.width=3,fig.height=1.5}
+top2corr <- function(df,mynames=H99_TSS_samples) {
+    data.frame( cor2 = 
+    cor(as.numeric(df[mynames][1,]),as.numeric(df[mynames][2,])) 
+    )
+}
+    
+H99_TSS_2corr <- 
+    H99_TSScts %>%
+    # head(n=100) %>%
+    mutate(Tot=rowSums(select(.,H99_TSS_samples))) %>%
+    arrange(desc(Tot)) %>%
+    group_by(Gene_name) %>%
+    do(top2corr(.)) %>%
+    ungroup()
+
+```
+
+### There is a wide range of correlations between the top-2 most-used TSS's
+
+```{r plot_top2corr_H99TSScts,dependson="top2corr_H99TSScts",fig.width=3,fig.height=1.5}
+
+ggplot(data=H99_TSS_2corr,aes(x=cor2)) + 
+    geom_density(kernel="rectangular",adjust=0.5) +
+    scale_x_continuous("corr. of top-2 TSS counts, H99",
+                       limits=c(-1,1),expand=c(0.01,0.01))
+```
+
+There are many negative correlations.
+
+### Plot counts for some genes with Highly-correlated TSS usage
+
+```{r plot_H99_2corrTSS,dependson="top2corr_H99TSScts",fig.width=3,fig.height=3,results="show"}
+
+H99_TSS_2corr %>%
+    filter(cor2 > 0.95) %>%
+    left_join(H99_nTSS) %>%
+    arrange(desc(Tot))
+
+plot_altcountC(melt_H99_TSScts,"CNAG_06125")
+
+plot_altcountC(melt_H99_TSScts,"CNAG_06113")
+
+plot_altcountC(melt_H99_TSScts,"CNAG_06835")
+
+plot_altcountC(melt_H99_TSScts,"CNAG_00992")
+
+```
+
+### Plot counts for some genes with anti-correlated TSS usage
+
+```{r plot_H99_2anticorrTSS,dependson="top2corr_H99TSScts",fig.width=3,fig.height=3,results="show"}
+
+H99_TSS_2corr %>%
+    filter(cor2 < -0.5) %>%
+    left_join(H99_nTSS) %>%
+    arrange(desc(Tot))
+
+plot_altcountC(melt_H99_TSScts,"CNAG_04388")
+plot_altcountC(melt_H99_TSScts,"CNAG_03688")
+plot_altcountC(melt_H99_TSScts,"CNAG_04601")
+
+plot_altcountC(melt_H99_TSScts,"CNAG_01019")
+plot_altcountC(melt_H99_TSScts,"CNAG_05980")
+plot_altcountC(melt_H99_TSScts,"CNAG_06120")
+
+```
+
+CNAG_01019, Superoxide dismutase with role in ROS metabolism, interesting!
+
+## H99, Stat model to quantify differential TSS usage
+
+#### Scratch code comparing Poisson and negative binomial models.
+
+Some code that I used to test and set up the models is here
+
+```{r H99_poissonmodel_one,dependson="load_H99TSScts"}
+testcts <- melt_H99_TSScts %>% 
+    filter( Gene_name == "CNAG_01019" ) %>%
+    mutate(Site=factor(Site), Rep=factor(Rep)) %>%
+    select(Gene_name,Site,Condition,Rep,Count)
+
+testpois <- 
+    glm(Count~Site*Condition,data=testcts,family = poisson()) 
+
+testnegbin <- 
+    glm.nb(Count~Site*Condition,data=testcts) 
+
+testnegbincheap <- glm(Count~Site*Condition, data=testcts, 
+  family = negative.binomial(theta=testnegbin$theta), link = "log", 
+  control = glm.control(maxit=100, trace=T)) 
+
+```
+
+```{r H99_poissonmodel_2,eval=FALSE}
+testcts2 <- melt_H99_TSScts %>% 
+    filter( Gene_name %in% c("CNAG_01019","CNAG_05980" ) ) %>%
+    mutate(Site=factor(Site), Rep=factor(Rep)) %>%
+    select(Gene_name,Site,Condition,Rep,Count)
+
+testpois2 <- 
+    glm(Count ~ Gene_name + Gene_name:Condition + Gene_name:Site + Gene_name:Condition:Site,
+        data=testcts2,family = "poisson") %>% 
+    tidy()
+
+testnegbin2 <- 
+    glm.nb(Count ~ Gene_name + Gene_name:Condition + Gene_name:Site + Gene_name:Condition:Site,
+           data=testcts2) %>% 
+    tidy()
+
+```
+
+The code in the next chunk showed that fitting a single model across many hundreds/thousands of genes would be prohibitively slow to fit. In principle it would be possible to recode as a hierarchical model with information pooled between genes (e.g. dispersion $\theta$). However, it was more efficient to estimate $\theta$ from some subsamples, and then fit each gene separately, the approach we took in the end.
+
+```{r H99_poissonmodel_3,eval=FALSE}
+testcts3 <- melt_H99_TSScts %>% 
+    filter( Gene_name %in% c("CNAG_01019","CNAG_00121","CNAG_00002") ) %>%
+    mutate(Site=factor(Site), Rep=factor(Rep)) %>%
+    select(Gene_name,Site,Condition,Rep,Count)
+
+testpois3 <- 
+    glm(Count ~ Gene_name + Gene_name:Condition + Gene_name:Site + Gene_name:Condition:Site,
+        data=testcts3,family = "poisson") %>% 
+    tidy()
+
+testnegbin3 <- 
+    glm.nb(Count ~ Gene_name + Gene_name:Condition + Gene_name:Site + Gene_name:Condition:Site,
+           data=testcts3) %>% 
+    tidy()
+
+Gn100r <- melt_H99_TSScts %>% .$Gene_name %>% unique() %>% .[1:100]
+Gn100  <- H99_nTSS %>% 
+    .[1:100,] %>%
+    filter(nSites <= 3) %>%
+    .$Gene_name
+testcts100 <- melt_H99_TSScts %>% 
+    filter( Gene_name %in% Gn100) %>%
+    mutate(Site=factor(Site), Rep=factor(Rep)) %>%
+    select(Gene_name,Site,Condition,Rep,Count)
+```
+
+
+
+### Correlation for core 4 conditions, (30C, 37C) x (Expo, Stat)
+
+```{r H99_top2corr4cond_TSScts,dependson="load_TSScts",fig.width=3.5,fig.height=1.5}
+Fourcond_TSS_samples <- c("WT_Expo30_a","WT_Expo30_b","WT_Expo30_c",
+                          "WT_Expo37_a","WT_Expo37_b","WT_Expo37_c",
+                          "WT_Stat30_a","WT_Stat30_b","WT_Stat30_c",
+                          "WT_Stat37_a","WT_Stat37_b","WT_Stat37_c")
+    
+H99_TSS_2corr4 <- 
+    H99_TSScts %>%
+    # head(n=100) %>%
+    mutate(Tot=rowSums(select(.,Fourcond_TSS_samples))) %>%
+    arrange(desc(Tot)) %>%
+    group_by(Gene_name) %>%
+    do(top2corr(.,mynames=Fourcond_TSS_samples)) %>%
+    ungroup()
+
+H99_TSS_4hict <- 
+    H99_TSScts %>%
+    mutate(Tot=rowSums(select(.,Fourcond_TSS_samples))) %>%
+    group_by(Gene_name) %>%
+    summarize(Tot=sum(Tot)) %>%
+    arrange(desc(Tot)) %>%
+    head(n=700)
+
+H99_TSS_2corr4hi <- 
+    H99_TSS_4hict %>%
+    left_join(H99_TSScts) %>%
+    mutate(Tot=rowSums(select(.,Fourcond_TSS_samples))) %>%
+    arrange(desc(Tot)) %>%
+    group_by(Gene_name) %>%
+    do(top2corr(.,mynames=Fourcond_TSS_samples)) %>%
+    ungroup()
+```
+
+### Highly-expressed genes have more highly correlated TSS counts
+
+```{r plot_top2corr4_H99_TSScts,dependson="H99_top2corr4cond_TSScts",fig.width=3.5,fig.height=2}
+
+ggplot(data=H99_TSS_2corr4,aes(x=cor2)) + 
+    geom_density(aes(colour="all"),
+                 kernel="rectangular",adjust=0.5,size=1) +
+    geom_density(data=H99_TSS_2corr4 %>% right_join(H99_TSS_4hict),
+                 aes(colour="top 10%"),
+                 kernel="rectangular",adjust=0.5,size=1) +
+    scale_x_continuous("corr. of top-2 TSS counts, H99 core",
+                       limits=c(-1,1),expand=c(0.01,0.01)) +
+    scale_y_continuous("density",expand=c(0.01,0.01)) +
+    scale_colour_manual("mRNAs",values=c("all"="grey40","top 10%"="blue") ) + 
+    theme(axis.text.y=element_blank(),
+          axis.title.y=element_blank(),
+          axis.ticks.y = element_blank(),
+          axis.line.y = element_blank(),
+          legend.position=c(0,0.80))
+```
+
+
+
+
+## H99, Statistical model for alternative TSS usage between conditions
+
+This is the model we actually used, as explained above under JEC21.
+
+### Estimate theta (negative binomial dispersion) for 10 subsets of 50 genes
+
+```{r H99_nbtheta_1site,dependson="summarize_H99TSScts"}
+
+Gn_1site_H99  <- H99_nTSS %>% 
+    filter(nSites == 1) %>%
+    .$Gene_name
+
+# melt_H99_TSS_1site <- melt_H99_TSScts %>% 
+#     filter( Gene_name %in% Gn_1site ) %>%
+#     mutate(Site=factor(Site), Rep=factor(Rep)) %>%
+#     select(Gene_name,Site,Condition,Rep,Count)
+
+# testpois_1site <- 
+#     glm(Count~Gene_name:Condition,
+#         data=melt_H99_TSScts %>% 
+#     filter( Gene_name %in% base::sample(Gn_1site,100) ) %>%
+#     mutate(Site=factor(Site), Rep=factor(Rep)) %>%
+#     select(Gene_name,Site,Condition,Rep,Count),
+#         family = poisson()) 
+
+
+# 
+# testnegbin_1site <-
+#     glm.nb(Count~Gene_name:Condition,
+#         data=melt_H99_TSScts %>% 
+#     filter( Gene_name %in% base::sample(Gn_1site,100) ) %>%
+#     mutate(Site=factor(Site), Rep=factor(Rep)) %>%
+#     select(Gene_name,Site,Condition,Rep,Count)
+#     )
+
+negbin_sample_results_H99 <- 
+    plyr::ldply(1:10,function(i) {
+        theta_negbin_sample(n=100, 
+                            mydata=melt_H99_TSScts,
+                            mygenes=Gn_1site_H99) 
+    })
+
+theta_H99_TSScts_1site <- mean(negbin_sample_results_H99$theta)
+# testnegbincheap_1site <- glm(Count~Gene_name:Condition,
+#                              data=melt_H99_TSS_1site
+#                              family = negative.binomial(theta=testnegbin_1site$theta), 
+#                              link = "log", 
+#                              control = glm.control(maxit=100, trace=T)
+# ) 
+
+```
+
+
+### Fit negative binomial model to counts for each alt-TSS gene separately
+
+Negative binomial is an extension of Poisson model with extra parameter theta; NegBin(mu, theta) has mean mu and variance mu + mu^2/theta.
+
+```{r H99_fitNegbin,dependson=c("summarize_H99TSScts","negbin_AltTSS_functions")}
+
+# nbfits_2 <- H99_nTSS %>% 
+#     filter(nSites == 2) %>%
+#     left_join(melt_H99_TSScts) %>% 
+#     # filter( Gene_name %in% c("CNAG_01019","CNAG_00121") ) %>%
+#     mutate(Site=factor(Site), Rep=factor(Rep)) %>%
+#     select(Gene_name,Site,Condition,Rep,Count) %>%
+#     group_by(Gene_name) %>%
+#     do(fitNegbinAltTSSonegene(.))
+
+
+# nbfits_2plus_H99 <- H99_nTSS %>% 
+#     filter(nSites >= 2) %>%
+#     left_join(melt_H99_TSScts) %>% 
+#     # filter( Gene_name %in% c("CNAG_01019","CNAG_00121") ) %>%
+#     mutate(Site=factor(Site), Rep=factor(Rep)) %>%
+#     select(Gene_name,nSites,Site,Condition,Rep,Count) %>%
+#     group_by(Gene_name) %>%
+#     do(fitNegbinAltTSSonegene(.))
+
+nbfits_2plus_H99_Expo37vsExpo30 <- 
+    H99_nTSS %>% 
+    filter(nSites >= 2) %>%
+    left_join(melt_H99_TSScts) %>% 
+    filter(Condition %in% c("Expo30","Expo37")) %>%
+    # filter( Gene_name %in% c("CNAG_01019","CNAG_00121") ) %>%
+    mutate(Site=factor(Site), Rep=factor(Rep)) %>%
+    select(Gene_name,nSites,Site,Condition,Rep,Count) %>%
+    group_by(Gene_name) %>%
+    do(fitNegbinAltTSSonegene(.,mytheta=theta_H99_TSScts_1site))
+
+nbfits_2plus_H99_Stat30vsExpo30 <- 
+    H99_nTSS %>% 
+    filter(nSites >= 2) %>%
+    left_join(melt_H99_TSScts) %>% 
+    filter(Condition %in% c("Expo30","Stat30")) %>%
+    # filter( Gene_name %in% c("CNAG_01019","CNAG_00121") ) %>%
+    mutate(Site=factor(Site), Rep=factor(Rep)) %>%
+    select(Gene_name,nSites,Site,Condition,Rep,Count) %>%
+    group_by(Gene_name) %>%
+    do(fitNegbinAltTSSonegene(.,mytheta=theta_H99_TSScts_1site))
+
+nbfits_2plus_H99_Stat37vsExpo37 <- 
+    H99_nTSS %>% 
+    filter(nSites >= 2) %>%
+    left_join(melt_H99_TSScts) %>% 
+    filter(Condition %in% c("Stat37","Expo37")) %>%
+    # filter( Gene_name %in% c("CNAG_01019","CNAG_00121") ) %>%
+    mutate(Site=factor(Site), Rep=factor(Rep)) %>%
+    select(Gene_name,nSites,Site,Condition,Rep,Count) %>%
+    group_by(Gene_name) %>%
+    do(fitNegbinAltTSSonegene(.,mytheta=theta_H99_TSScts_1site))
+
+nbfits_2plus_H99_Stat37vsStat30 <- 
+    H99_nTSS %>% 
+    filter(nSites >= 2) %>%
+    left_join(melt_H99_TSScts) %>% 
+    filter(Condition %in% c("Stat37","Stat30")) %>%
+    # filter( Gene_name %in% c("CNAG_01019","CNAG_00121") ) %>%
+    mutate(Site=factor(Site), Rep=factor(Rep)) %>%
+    select(Gene_name,nSites,Site,Condition,Rep,Count) %>%
+    group_by(Gene_name) %>%
+    do(fitNegbinAltTSSonegene(.,mytheta=theta_H99_TSScts_1site))
+```
+
+
+### Alternate TSS usage at Expo 30
+
+#### p-values from this are nowhere near uniformly distributed
+
+```{r H99_altTSS_pval_dist,dependson="H99_fitNegbin",fig.width=3,fig.height=1.5}
+ggplot(data=nbfits_2plus_H99_Expo37vsExpo30 %>% 
+           filter(term %in% c("Site2","Site3","Site4","Site5")) %>%
+           ungroup(),
+       aes(x=p.value)) + 
+    geom_density(kernel="rectangular",adjust=0.1)
+```
+
+This suggests that most alt sites are either very differentially used or very similarly used; there's not much middle ground.
+
+#### Volcano plot shows great variety in alt TSS usage
+
+```{r H99_altTSS_volcano,dependson="H99_fitNegbin",fig.width=4,fig.height=3}
+# qobj <- qvalue(p = nbfits_2plus_H99 %>% filter(term=="Site2") %>% .$p.value)
+# ggplot(data=nbfits_2plus_H99 %>% filter(term=="Site2"),
+#        aes(x=estimate,y=-log10(p.value))) + 
+#     geom_point() +
+#     scale_x_continuous("log diff usage site 1 vs 2",
+#                        limits=c(-8,8),oob=scales::squish)
+
+ggplot(data=nbfits_2plus_H99_Expo37vsExpo30 %>% 
+           filter(term %in% c("Site2","Site3","Site4","Site5")),
+       aes(x=estimate/ log(10),y=-log10(p.value))) + 
+    geom_point() +
+    scale_x_continuous("log10 diff usage site 1 vs others",
+                       limits=c(-3,3),oob=scales::squish)
+```
+
+### Alternate TSS usage at Expo 37C vs 30C
+
+#### p-values from this are nowhere near uniformly distributed either
+
+```{r H99_regTSSExpo37vsExpo30_pval_dist,dependson="H99_fitNegbin",fig.width=3,fig.height=1.5}
+Expo37_sitevals <- paste0("ConditionExpo37:",c("Site2","Site3","Site4","Site5"))
+
+ggplot(data=nbfits_2plus_H99_Expo37vsExpo30 %>% 
+           ungroup() %>%
+           filter(term %in% Expo37_sitevals),
+       aes(x=p.value)) + 
+    geom_density(kernel="rectangular",adjust=0.1)
+```
+
+#### Volcano plot with FDR control
+
+Coloured for significance at 1% FDR, Benjamini-Hochberg.
+
+```{r H99_regTSSExpo37vsExpo30_volcano,dependson="H99_fitNegbin",fig.width=4,fig.height=3}
+Expo37_regTSSall <- nbfits_2plus_H99_Expo37vsExpo30 %>% 
+           filter(term %in% Expo37_sitevals) %>%
+           ungroup() %>%
+          mutate(sig.FDR = getfdr(p.value))
+
+write( Expo37_regTSSall %>% filter(sig.FDR) %>% .$Gene_name %>% unique(),
+       file = "../results/alt_usage_calls_negbin/TSS_H99_regulatedsites_Expo37vsExpo30_WT.txt")
+
+ggplot(data=Expo37_regTSSall,
+       aes(x=estimate/log(10),y=-log10(p.value),colour=sig.FDR)) + 
+    geom_point() +
+    scale_x_continuous("log10 diff usage in Expo37C",
+                       limits=c(-3,3),oob=scales::squish) +
+    scale_colour_manual(values=c("TRUE"="blue","FALSE"="grey50")) + 
+    theme(legend.position="none")
+```
+
+#### Top hits of stat model
+
+```{r H99_regTSSExpo37vsExpo30_toplist,dependson="H99_regTSSExpo37vsExpo30_volcano",results="show"}
+H99_regTSSExpo37vsExpo30_toplist <-
+    Expo37_regTSSall %>%
+    filter(sig.FDR) %>%
+    mutate(log10abs = abs(estimate)/log(10)) %>%
+    left_join(H99_nTSS) %>%
+    select(Gene_name,term,Tot,log10abs,p.value) %>%
+    arrange(desc(Tot))
+
+H99_regTSSExpo37vsExpo30_toplist
+```
+
+#### Stat model indeed identifies TSS's that are differentially used 
+
+```{r H99_plot_regTSSExpo37vsExpo30_toplist,dependson="H99_regTSSExpo37vsExpo30_toplist",fig.width=3,fig.height=3}
+
+plot_altcountC(melt_H99_TSScts,Gname = H99_regTSSExpo37vsExpo30_toplist$Gene_name[1])
+plot_altcountC(melt_H99_TSScts,Gname = H99_regTSSExpo37vsExpo30_toplist$Gene_name[2])
+plot_altcountC(melt_H99_TSScts,Gname = H99_regTSSExpo37vsExpo30_toplist$Gene_name[3])
+
+# plot_altcountC(melt_H99_TSScts,Gname = H99_regTSSExpo37vsExpo30_toplist$Gene_name[4])
+# plot_altcountC(melt_H99_TSScts,Gname = H99_regTSSExpo37vsExpo30_toplist$Gene_name[5])
+# plot_altcountC(melt_H99_TSScts,Gname = H99_regTSSExpo37vsExpo30_toplist$Gene_name[6])
+
+
+H99_regTSSExpo37vsExpo30_toplistabs <- H99_regTSSExpo37vsExpo30_toplist %>%
+    filter(Tot > 5000) %>%
+    arrange(desc(log10abs))
+
+plot_altcountC(melt_H99_TSScts,Gname = H99_regTSSExpo37vsExpo30_toplistabs$Gene_name[1])
+plot_altcountC(melt_H99_TSScts,Gname = H99_regTSSExpo37vsExpo30_toplistabs$Gene_name[2])
+plot_altcountC(melt_H99_TSScts,Gname = H99_regTSSExpo37vsExpo30_toplistabs$Gene_name[3])
+
+```
+
+
+### Alternate TSS usage at Stat vs Expo at 30C
+
+#### p-values from this are nowhere near uniformly distributed either
+
+```{r H99_regTSSStat30vsExpo30_pval_dist,dependson="H99_fitNegbin",fig.width=3,fig.height=1.5}
+Stat30_sitevals <- paste0("ConditionStat30:",c("Site2","Site3","Site4","Site5"))
+
+ggplot(data=nbfits_2plus_H99_Stat30vsExpo30 %>% 
+           ungroup() %>%
+           filter(term %in% Stat30_sitevals),
+       aes(x=p.value)) + 
+    geom_density(kernel="rectangular",adjust=0.1)
+```
+
+Coloured for significance at 1% FDR, Benjamini-Hochberg.
+
+```{r H99_regTSSStat30vsExpo30_volcano,dependson="H99_fitNegbin",fig.width=4,fig.height=3}
+Stat30_site_ntests <- 
+    nbfits_2plus_H99_Stat30vsExpo30 %>% 
+    filter(term %in% Stat30_sitevals) %>%
+    nrow()
+
+Stat30_regTSSall <- nbfits_2plus_H99_Stat30vsExpo30 %>% 
+           filter(term %in% Stat30_sitevals) %>%
+           ungroup() %>%
+          mutate(sig.FDR = getfdr(p.value))
+
+write( Stat30_regTSSall %>% filter(sig.FDR) %>% .$Gene_name %>% unique(),
+       file = "../results/alt_usage_calls_negbin/TSS_H99_regulatedsites_Stat30vsExpo30_WT.txt")
+
+ggplot(data=Stat30_regTSSall, # %>%
+           # mutate(sig.Bonf = ( p.value < 0.1 / Stat30_site_ntests) ),
+       aes(x=estimate/ log(10),y=-log10(p.value),colour=sig.FDR)) + 
+    geom_point() +
+    scale_x_continuous("log10 diff usage in Stat30C",
+                       limits=c(-3,3),oob=scales::squish) +
+    scale_colour_manual(values=c("TRUE"="blue","FALSE"="grey50")) + 
+    theme(legend.position="none")
+```
+
+
+#### Top hits of stat model
+
+```{r H99_regTSSStat30vsExpo30_toplist,dependson="H99_regTSSStat30vsExpo30_volcano",results="show"}
+
+
+H99_regTSSStat30vsExpo30_toplist <-
+    Stat30_regTSSall %>%
+    filter(sig.FDR) %>%
+    mutate(log10abs = abs(estimate)/log(10)) %>%
+    left_join(H99_nTSS) %>%
+    select(Gene_name,term,Tot,log10abs,p.value) %>%
+    arrange(desc(Tot))
+H99_regTSSStat30vsExpo30_toplist
+```
+
+#### Stat model indeed identifies TSS's that are differentially used 
+
+```{r H99_plot_regTSSStat30vsExpo30_toplist,dependson="H99_regTSSStat30vsExpo30_toplist",fig.width=3,fig.height=3}
+
+plot_altcountC(melt_H99_TSScts,Gname = H99_regTSSStat30vsExpo30_toplist$Gene_name[1])
+plot_altcountC(melt_H99_TSScts,Gname = H99_regTSSStat30vsExpo30_toplist$Gene_name[2])
+plot_altcountC(melt_H99_TSScts,Gname = H99_regTSSStat30vsExpo30_toplist$Gene_name[3])
+# 
+# plot_altcountC(melt_H99_TSScts,Gname = H99_regTSSStat30vsExpo30_toplist$Gene_name[4])
+# plot_altcountC(melt_H99_TSScts,Gname = H99_regTSSStat30vsExpo30_toplist$Gene_name[5])
+# plot_altcountC(melt_H99_TSScts,Gname = H99_regTSSStat30vsExpo30_toplist$Gene_name[6])
+
+H99_regTSSStat30vsExpo30_toplistabs <- H99_regTSSStat30vsExpo30_toplist %>%
+    filter(Tot > 5000) %>%
+    arrange(desc(log10abs))
+
+plot_altcountC(melt_H99_TSScts,Gname = H99_regTSSStat30vsExpo30_toplistabs$Gene_name[1])
+plot_altcountC(melt_H99_TSScts,Gname = H99_regTSSStat30vsExpo30_toplistabs$Gene_name[2])
+plot_altcountC(melt_H99_TSScts,Gname = H99_regTSSStat30vsExpo30_toplistabs$Gene_name[3])
+```
+
+    - CNAG_04245, chitinase.
+    - CNAG_06817, UAP cation symporter
+
+
+
+### Stat37 vs Stat30
+
+#### Volcano plot with FDR control
+
+
+```{r H99_regTSSStat37vsStat30_volcano,dependson="H99_fitNegbin",fig.width=4,fig.height=3}
+
+Stat37_sitevals <- paste0("ConditionStat37:",c("Site2","Site3","Site4","Site5"))
+
+Stat37vsStat30_regTSSall <- nbfits_2plus_H99_Stat37vsStat30 %>% 
+           filter(term %in% Stat37_sitevals) %>%
+           ungroup() %>%
+          mutate(sig.FDR = getfdr(p.value))
+
+write( Stat37vsStat30_regTSSall %>% filter(sig.FDR) %>% .$Gene_name %>% unique(),
+       file = "../results/alt_usage_calls_negbin/TSS_H99_regulatedsites_Stat37vsStat30_WT.txt")
+
+# ggplot(data=Stat37vsStat30_regTSSall,
+#        aes(x=estimate/log(10),y=-log10(p.value),colour=sig.FDR)) +
+#     geom_point() +
+#     scale_x_continuous("log10 diff usage, Stat 37 vs Stat 30",
+#                        limits=c(-3,3),oob=scales::squish) +
+#     scale_colour_manual(values=c("TRUE"="blue","FALSE"="grey50")) +
+#     theme(legend.position="none")
+```
+
+#### Top hits of stat model
+
+```{r H99_regTSSStat37vsStat30_toplist,dependson="H99_regTSSStat37vsStat30_volcano",results="show"}
+H99Stat37vsStat30_regTSS_toplist <-
+    Stat37vsStat30_regTSSall %>%
+    filter(sig.FDR) %>%
+    mutate(log10abs = abs(estimate)/log(10)) %>%
+    left_join(H99_nTSS) %>%
+    select(Gene_name,term,Tot,log10abs,p.value) %>%
+    arrange(desc(Tot))
+
+H99Stat37vsStat30_regTSS_toplist
+```
+
+#### Stat model indeed identifies TSS's that are differentially used 
+
+```{r H99_plot_regTSSStat37vsStat30_toplist,dependson="H99_regTSSExpo37vsExpo30_toplist",fig.width=3,fig.height=3}
+
+plot_altcountC(melt_H99_TSScts,Gname = H99Stat37vsStat30_regTSS_toplist$Gene_name[1])
+plot_altcountC(melt_H99_TSScts,Gname = H99Stat37vsStat30_regTSS_toplist$Gene_name[2])
+plot_altcountC(melt_H99_TSScts,Gname = H99Stat37vsStat30_regTSS_toplist$Gene_name[3])
+
+H99Stat37vsStat30_regTSS_toplistabs <- H99Stat37vsStat30_regTSS_toplist %>%
+    filter(Tot > 5000) %>%
+    arrange(desc(log10abs))
+
+plot_altcountC(melt_H99_TSScts,Gname = H99Stat37vsStat30_regTSS_toplistabs$Gene_name[1])
+plot_altcountC(melt_H99_TSScts,Gname = H99Stat37vsStat30_regTSS_toplistabs$Gene_name[2])
+plot_altcountC(melt_H99_TSScts,Gname = H99Stat37vsStat30_regTSS_toplistabs$Gene_name[3])
+
+```
+
+### Stat37 vs Expo37
+
+#### Volcano plot with FDR control
+
+
+```{r H99_regTSSStat37vsExpo37_volcano,dependson="H99_fitNegbin",fig.width=4,fig.height=3}
+
+Stat37_sitevals <- paste0("ConditionStat37:",c("Site2","Site3","Site4","Site5"))
+
+Stat37vsExpo37_regTSSall <- nbfits_2plus_H99_Stat37vsExpo37 %>% 
+           filter(term %in% Stat37_sitevals) %>%
+           ungroup() %>%
+          mutate(sig.FDR = getfdr(p.value))
+
+write( Stat37vsExpo37_regTSSall %>% filter(sig.FDR) %>% .$Gene_name %>% unique(),
+       file = "../results/alt_usage_calls_negbin/TSS_H99_regulatedsites_Stat37vsExpo37_WT.txt")
+
+# ggplot(data=Stat37vsExpo37_regTSSall,
+#        aes(x=estimate/log(10),y=-log10(p.value),colour=sig.FDR)) +
+#     geom_point() +
+#     scale_x_continuous("log10 diff usage, Stat 37 vs Stat 30",
+#                        limits=c(-3,3),oob=scales::squish) +
+#     scale_colour_manual(values=c("TRUE"="blue","FALSE"="grey50")) +
+#     theme(legend.position="none")
+```
+
+#### Top hits of stat model
+
+```{r H99_regTSSStat37vsExpo37_toplist,dependson="H99_regTSSStat37vsExpo37_volcano",results="show"}
+H99Stat37vsExpo37_regTSS_toplist <-
+    Stat37vsExpo37_regTSSall %>%
+    filter(sig.FDR) %>%
+    mutate(log10abs = abs(estimate)/log(10)) %>%
+    left_join(H99_nTSS) %>%
+    select(Gene_name,term,Tot,log10abs,p.value) %>%
+    arrange(desc(Tot))
+
+H99Stat37vsExpo37_regTSS_toplist
+```
+
+#### Stat model indeed identifies TSS's that are differentially used 
+
+```{r H99_plot_regTSSStat37vsExpo37_toplist,dependson="H99_regTSSExpo37vsExpo30_toplist",fig.width=3,fig.height=3}
+
+plot_altcountC(melt_H99_TSScts,Gname = H99Stat37vsExpo37_regTSS_toplist$Gene_name[1])
+plot_altcountC(melt_H99_TSScts,Gname = H99Stat37vsExpo37_regTSS_toplist$Gene_name[2])
+plot_altcountC(melt_H99_TSScts,Gname = H99Stat37vsExpo37_regTSS_toplist$Gene_name[3])
+
+H99Stat37vsExpo37_regTSS_toplistabs <- H99Stat37vsExpo37_regTSS_toplist %>%
+    filter(Tot > 5000) %>%
+    arrange(desc(log10abs))
+
+plot_altcountC(melt_H99_TSScts,Gname = H99Stat37vsExpo37_regTSS_toplistabs$Gene_name[1])
+plot_altcountC(melt_H99_TSScts,Gname = H99Stat37vsExpo37_regTSS_toplistabs$Gene_name[2])
+plot_altcountC(melt_H99_TSScts,Gname = H99Stat37vsExpo37_regTSS_toplistabs$Gene_name[3])
+
+```
+

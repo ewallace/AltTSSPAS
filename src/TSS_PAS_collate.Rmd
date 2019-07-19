@@ -1,0 +1,108 @@
+---
+title: "Collate TSS/PAS counts"
+author: "Edward Wallace, ewjwallace@gmail.com"
+date: "6th March 2018, rev 19 July 2019"
+output:
+  html_document:
+    toc: true
+    toc_depth: 4
+---
+
+```{r setup,warning=FALSE,message=FALSE,echo=FALSE,cache=FALSE}
+knitr::opts_chunk$set(cache=FALSE)
+library(tidyverse)
+```
+
+# Collate TSS counts
+
+This is the code used to collate TSS and PAS counts from the tables provided by Corinne Maufrais. Key point is to combine clusters on fwd and rev strands into single tables.
+
+```{r collate_TSScts}
+# setwd("~/Repos/AltTSSPAS/src/")
+
+JEC21_TSS_cts <- 
+bind_rows(
+    read_tsv("../data/fwd_rev_sep/JEC21.TSStable.replicat.fwd.10.no_zero.notNorm.txt",
+             skip=1) %>% 
+        select(-X27) %>%
+        mutate(strand="+"),
+    read_tsv("../data/fwd_rev_sep/JEC21.TSStable.replicat.rev.10.no_zero.notNorm.txt",
+             skip=1) %>% 
+        select(-X27) %>%
+        mutate(strand="-") ) %>%
+    dplyr::select( name,start,stop,size,strand,location,
+            WT_Expo30_a="ne11EXPO-a", WT_Expo30_b="ne11EXPO-b", WT_Expo30_c="ne11EXPO-c",
+            WT_Expo37_a="ne11-37-a", WT_Expo37_b="ne11-37-b", WT_Expo37_c="ne11-37-c",
+            WT_Stat30_a="ne11STAT-a", WT_Stat30_b="ne11STAT-b", WT_Stat30_c="ne11STAT-c",
+            WT_Stat37_a="ne11STAT-37-a", WT_Stat37_b="ne11STAT-37-b", WT_Stat37_c="ne11STAT-37-c",
+            upf1_Expo30_a="ne579-30-a", upf1_Expo30_b="ne579-30-b", upf1_Expo30_c="ne579-30-c",
+            upf1_Expo37_a="ne579-37-a", upf1_Expo37_b="ne579-37-b", upf1_Expo37_c="ne579-37-c",
+            upf1_Stat30_a="ne579STAT-a", upf1_Stat30_b="ne579STAT-b", upf1_Stat30_c="ne579STAT-c")
+
+write_tsv(JEC21_TSS_cts,"../data/united/JEC21.TSStable.replicat.10.no_zero.notNorm.txt")
+
+H99_TSS_cts <- 
+bind_rows(
+    read_tsv("../data/fwd_rev_sep/H99.TSStable.replicat.fwd.10.no_zero.notNorm.txt",
+             skip=1) %>% 
+        select(-X18) %>%
+        mutate(strand="+"),
+    read_tsv("../data/fwd_rev_sep/H99.TSStable.replicat.rev.10.no_zero.notNorm.txt",
+             skip=1) %>% 
+        select(-X18) %>%
+        mutate(strand="-") ) %>%
+    dplyr::select( name,start,stop,size,strand,location,
+            WT_Expo30_a="ne241EXPO-a", WT_Expo30_b="ne241EXPO-b", WT_Expo30_c="ne241EXPO-c",
+            WT_Expo37_a="ne241-37-a", WT_Expo37_b="ne241-37-b", WT_Expo37_c="ne241-37-c",
+            WT_Stat30_a="ne241STAT-a", WT_Stat30_b="ne241STAT-b", WT_Stat30_c="ne241STAT-c",
+            WT_Stat37_a="ne241STAT-37-a", WT_Stat37_b="ne241STAT-37-b", WT_Stat37_c="ne241STAT-37-c"
+            )
+
+write_tsv(H99_TSS_cts,"../data/united/H99.TSStable.replicat.10.no_zero.notNorm.txt")
+
+
+JEC21_pA_cts <- 
+bind_rows(
+    read_tsv("../data/fwd_rev_sep/JEC21.pA_table.replicat.fwd.10.no_zero.notNorm.txt",
+             skip=1) %>% 
+        select(-X24) %>%
+        mutate(strand="+"),
+    read_tsv("../data/fwd_rev_sep/JEC21.pA_table.replicat.rev.10.no_zero.notNorm.txt",
+             skip=1) %>% 
+        select(-X24) %>%
+        mutate(strand="-") ) %>%
+    dplyr::select( name,start,stop,size,strand,location,
+            WT_Expo30_a="ne11EXPO-a", WT_Expo30_b="ne11EXPO-b", WT_Expo30_c="ne11EXPO-c",
+            WT_Expo37_a="ne11-37-a", WT_Expo37_b="ne11-37-b", WT_Expo37_c="ne11-37-c",
+            WT_Stat30_a="ne11STAT-a", WT_Stat30_b="ne11STAT-b", WT_Stat30_c="ne11STAT-c",
+            WT_Stat37_a="ne11STAT-37-a", WT_Stat37_b="ne11STAT-37-b", WT_Stat37_c="ne11STAT-37-c",
+            upf1_Expo30_a="ne579EXPO-a", upf1_Expo30_b="ne579EXPO-b", upf1_Expo30_c="ne579EXPO-c",
+            pab2_Expo30_a="ne695EXPO-a", pab2_Expo30_b="ne695EXPO-b", pab2_Expo30_c="ne695EXPO-c")
+
+write_tsv(JEC21_pA_cts,"../data/united/JEC21.pA_table.replicat.10.no_zero.notNorm.txt")
+
+H99_pA_cts <- 
+bind_rows(
+    read_tsv("../data/fwd_rev_sep/H99.pA_table.replicat.fwd.10.no_zero.notNorm.txt",
+             skip=1) %>% 
+        select(-X33) %>%
+        mutate(strand="+"),
+    read_tsv("../data/fwd_rev_sep/H99.pA_table.replicat.rev.10.no_zero.notNorm.txt",
+             skip=1) %>% 
+        select(-X33) %>%
+        mutate(strand="-") ) %>%
+    dplyr::select( name,start,stop,size,strand,location,
+            WT_Expo30_a="ne241EXPO-a", WT_Expo30_b="ne241EXPO-b", WT_Expo30_c="ne241EXPO-c",
+            WT_Expo37_a="ne241-37-a", WT_Expo37_b="ne241-37-b", WT_Expo37_c="ne241-37-c",
+            WT_Stat30_a="ne241STAT-a", WT_Stat30_b="ne241STAT-b", WT_Stat30_c="ne241STAT-c",
+            WT_Stat37_a="ne241STAT-37-a", WT_Stat37_b="ne241STAT-37-b", WT_Stat37_c="ne241STAT-37-c",
+            WT_Fluco30_a="ne241Fluco-a",WT_Fluco30_b="ne241Fluco-b",WT_Fluco30_c="ne241Fluco-c",
+            WT_Gal30_a="ne241GAL-a",WT_Gal30_b="ne241GAL-b",WT_Gal30_c="ne241GAL-c",
+            WT_SDS30_a="ne241SDS-a",WT_SDS30_b="ne241SDS-b",WT_SDS30_c="ne241SDS-c",
+            WT_RPMI30_a="ne241RPMI-a",WT_RPMI30_b="ne241RPMI-b",WT_RPMI30_c="ne241RPMI-c",
+            WT_RPMImacro30_a="ne241RPMI_Macro-a",WT_RPMImacro30_b="ne241RPMI_Macro-b",WT_RPMImacro30_c="ne241RPMI_Macro-c"
+            )
+
+write_tsv(H99_pA_cts,"../data/united/H99.pA_table.replicat.10.no_zero.notNorm.txt")
+
+```

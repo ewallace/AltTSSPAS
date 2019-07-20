@@ -356,7 +356,7 @@ JEC21_sample_fit %>%
     select(coeff,term,estimate,std.error,p.value)
 ```
 
-The key question for differential alt usage is if $$ \beta_{37,2} - \beta_{30,2} $$ i.e. ConditionExpo37:Site2, is significant and substantial. For this gene, the difference is big, as we can see from the graph, and siggnificant as we see from the p value of 0.0017.
+The key question for differential alt usage is if $$ \beta_{37,2} - \beta_{30,2} $$ i.e. ConditionExpo37:Site2, is significant and substantial. For this gene, the difference is big, as we can see from the graph, and significant as we see from the p value of 0.0017.
 
 
 The fit has 8 coefficients for 12 data points, so 4 degrees of freedom:
@@ -1705,7 +1705,7 @@ H99_regTSSStat30vsExpo30_toplistabs <- H99_regTSSStat30vsExpo30_toplist %>%
 
 plot_altcountC(melt_H99_TSScts,Gname = H99_regTSSStat30vsExpo30_toplistabs$Gene_name[1])
 plot_altcountC(melt_H99_TSScts,Gname = H99_regTSSStat30vsExpo30_toplistabs$Gene_name[2])
-plot_altcountC(melt_H99_TSScts,Gname = H99_regTSSStat30vsExpo30_toplistabs$Gene_name[3])
+plot_altcountC(melt_H99_TSScts,Gname = H99_regTSSStat30vsExpo30_toplistabs$Gene_name[4])
 ```
 
     - CNAG_04245, chitinase.
@@ -1758,8 +1758,8 @@ H99Stat37vsStat30_regTSS_toplist
 ```{r H99_plot_regTSSStat37vsStat30_toplist,dependson="H99_regTSSExpo37vsExpo30_toplist",fig.width=3,fig.height=3}
 
 plot_altcountC(melt_H99_TSScts,Gname = H99Stat37vsStat30_regTSS_toplist$Gene_name[1])
-plot_altcountC(melt_H99_TSScts,Gname = H99Stat37vsStat30_regTSS_toplist$Gene_name[2])
 plot_altcountC(melt_H99_TSScts,Gname = H99Stat37vsStat30_regTSS_toplist$Gene_name[3])
+plot_altcountC(melt_H99_TSScts,Gname = H99Stat37vsStat30_regTSS_toplist$Gene_name[4])
 
 H99Stat37vsStat30_regTSS_toplistabs <- H99Stat37vsStat30_regTSS_toplist %>%
     filter(Tot > 5000) %>%
@@ -1770,6 +1770,9 @@ plot_altcountC(melt_H99_TSScts,Gname = H99Stat37vsStat30_regTSS_toplistabs$Gene_
 plot_altcountC(melt_H99_TSScts,Gname = H99Stat37vsStat30_regTSS_toplistabs$Gene_name[3])
 
 ```
+
+- CNAG_06125, Heat Shock Protein HSP90
+- CNAG_06238, Glutathione S-Transferase
 
 ### Stat37 vs Expo37
 

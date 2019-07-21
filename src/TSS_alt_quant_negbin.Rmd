@@ -76,6 +76,19 @@ plot_altcountS <- function(df,Gname) {
         theme(axis.text.x=element_text(angle=90,vjust=0.5),
               axis.title.x=element_blank())
 }
+
+summarize_counts_bygene <- function(countdf,samplenames) {
+        countdf %>%
+    mutate(Tot=rowSums(select(.,samplenames))) %>%
+    group_by(Gene_name) %>%
+    summarize(nSites=n_distinct(Site),
+              nLocations=n_distinct(location),
+              Tot=sum(Tot),
+              cdsAlt=("cdsE" %in% location | "cdsI" %in% location),
+              utr5Altx=sum(str_count(location,"utr5") ) >= 2,
+              utr3Altx=sum(str_count(location,"utr3") ) >= 2
+              )
+}
 ```
 
 
@@ -116,15 +129,16 @@ JEC21_TSS_samples_norep <- expand.grid(Strain=c("WT","upf1") ,
 
 ```{r summarize_TSScts,dependson="load_TSScts",fig.width=3,fig.height=1.5}
 JEC21_nTSS <- 
-    JEC21_TSScts %>%
-    mutate(Tot=rowSums(select(.,JEC21_TSS_samples))) %>%
-    group_by(Gene_name) %>%
-    summarize(nSites=n_distinct(Site),
-              nLocations=n_distinct(location),
-              Tot=sum(Tot))
+    summarize_counts_bygene(JEC21_TSScts,JEC21_TSS_samples)
 
+write_tsv(JEC21_nTSS,"../results/n_sites/JEC21_nTSS_summary.txt")
+```
+
+```{r plot_summarize_TSScts,dependson="summarize_TSScts",fig.width=3,fig.height=1.5}
 ggplot(data=JEC21_nTSS,aes(x=nSites)) + 
     geom_histogram(binwidth=1) + 
+    geom_histogram(data=JEC21_nTSS %>% filter(cdsAlt),
+                   binwidth=1,fill=NA,colour="red") +
     labs(x="nSites, JEC21",y="nGenes")
 
 ggplot(data=JEC21_nTSS,aes(x=nLocations)) + 
@@ -412,6 +426,7 @@ Gn_1site_JEC21  <- JEC21_nTSS %>%
     filter(nSites == 1) %>%
     .$Gene_name
 
+set.seed(1) # this to ensure reproducibility
 
 negbin_sample_results_JEC21 <- 
     plyr::ldply(1:10,function(i) { 
@@ -1183,15 +1198,17 @@ H99_TSS_samples <- expand.grid(Strain="WT",
 
 ```{r summarize_H99TSScts,dependson="load_H99TSScts",fig.width=3,fig.height=1.5}
 H99_nTSS <- 
-    H99_TSScts %>%
-    mutate(Tot=rowSums(select(.,H99_TSS_samples))) %>%
-    group_by(Gene_name) %>%
-    summarize(nSites=n_distinct(Site),
-              nLocations=n_distinct(location),
-              Tot=sum(Tot))
+    summarize_counts_bygene(H99_TSScts,H99_TSS_samples)
+
+write_tsv(H99_nTSS,"../results/n_sites/H99_nTSS_summary.txt")
+```
+
+```{r plot_summarize_H99TSScts,dependson="summarize_H99TSScts",fig.width=3,fig.height=1.5}
 
 ggplot(data=H99_nTSS,aes(x=nSites)) + 
     geom_histogram(binwidth=1) + 
+    geom_histogram(data=H99_nTSS %>% filter(cdsAlt),
+                   binwidth=1,fill=NA,colour="red") +
     labs(x="nSites, H99",y="nGenes")
 
 ggplot(data=H99_nTSS,aes(x=nLocations)) + 
@@ -1447,6 +1464,8 @@ Gn_1site_H99  <- H99_nTSS %>%
 #     mutate(Site=factor(Site), Rep=factor(Rep)) %>%
 #     select(Gene_name,Site,Condition,Rep,Count)
 #     )
+
+set.seed(1) # this to ensure reproducibility
 
 negbin_sample_results_H99 <- 
     plyr::ldply(1:10,function(i) {

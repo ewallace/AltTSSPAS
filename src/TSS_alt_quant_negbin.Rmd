@@ -54,8 +54,8 @@ plot_altcountC <- function(df,Gname) {
                shape=Rep,colour=factor(Site))) +
         geom_point(position=position_dodge(width = 0.4)) + 
         scale_colour_brewer("Site",palette = "Set1") +
-        scale_y_continuous(expand=c(0.04,0.04)) + 
-        expand_limits(y=0) +
+        coord_cartesian(expand=FALSE,clip="off") + 
+        expand_limits(y=0,x=0.5) +
         labs(title=Gname) + 
         theme(axis.text.x=element_text(angle=90,vjust=0.5),
               axis.title.x=element_blank())
@@ -70,8 +70,8 @@ plot_altcountS <- function(df,Gname) {
                shape=Rep,colour=factor(Site))) +
         geom_point(position=position_dodge(width = 0.4)) + 
         scale_colour_brewer("Site",palette = "Set1") +
-        scale_y_continuous(expand=c(0.04,0.04)) + 
-        expand_limits(y=0) +
+        coord_cartesian(expand=FALSE,clip="off") + 
+        expand_limits(y=0,x=0.5) +
         labs(title=Gname) + 
         theme(axis.text.x=element_text(angle=90,vjust=0.5),
               axis.title.x=element_blank())
@@ -123,8 +123,14 @@ JEC21_nTSS <-
               nLocations=n_distinct(location),
               Tot=sum(Tot))
 
-ggplot(data=JEC21_nTSS,aes(x=nSites)) + geom_histogram(binwidth=1) + labs(x="nSites, JEC21",y="nGenes")
-ggplot(data=JEC21_nTSS,aes(x=nLocations)) + geom_histogram(binwidth=1) + labs(x="nLocations, JEC21",y="nGenes")
+ggplot(data=JEC21_nTSS,aes(x=nSites)) + 
+    geom_histogram(binwidth=1) + 
+    labs(x="nSites, JEC21",y="nGenes")
+
+ggplot(data=JEC21_nTSS,aes(x=nLocations)) + 
+    geom_histogram(binwidth=1) + 
+    labs(x="nLocations, JEC21",y="nGenes")
+
 ggplot(data=JEC21_nTSS,aes(x=Tot)) +
     geom_density(kernel="rectangular",adjust=0.5) + 
     scale_x_log10("Total counts, JEC21")
@@ -331,8 +337,6 @@ JEC21_sample_cts <-
 JEC21_sample_cts
 
 plot_altcountC(JEC21_sample_cts,Gname = "CNA00250")
-
-# plot_altcountC(melt_JEC21_TSScts,Gname = "CNA00250")
 
 ```
 
@@ -700,9 +704,9 @@ plot_altcountS(melt_JEC21_TSScts,Gname = JEC21Stat37vsStat30_regTSS_toplistabs$G
 Stat37_sitevals <- paste0("ConditionStat37:",c("Site2","Site3","Site4","Site5"))
 
 Stat37vsExpo37_regTSSall <- nbfits_2plus_JEC21_Stat37vsExpo37 %>% 
-           filter(term %in% Stat37_sitevals) %>%
-           ungroup() %>%
-          mutate(sig.FDR = getfdr(p.value))
+    filter(term %in% Stat37_sitevals) %>%
+    ungroup() %>%
+    mutate(sig.FDR = getfdr(p.value))
 
 write( Stat37vsExpo37_regTSSall %>% filter(sig.FDR) %>% .$Gene_name %>% unique(),
        file = "../results/alt_usage_calls_negbin/TSS_JEC21_regulatedsites_Stat37vsExpo37_WT.txt")
@@ -1186,9 +1190,17 @@ H99_nTSS <-
               nLocations=n_distinct(location),
               Tot=sum(Tot))
 
-ggplot(data=H99_nTSS,aes(x=nSites)) + geom_histogram(binwidth=1) + labs(x="nSites, H99",y="nGenes")
-ggplot(data=H99_nTSS,aes(x=nLocations)) + geom_histogram(binwidth=1) + labs(x="nLocations, H99",y="nGenes")
-ggplot(data=H99_nTSS,aes(x=Tot)) + geom_density(kernel="rectangular",adjust=0.5) + scale_x_log10("Total counts, H99")
+ggplot(data=H99_nTSS,aes(x=nSites)) + 
+    geom_histogram(binwidth=1) + 
+    labs(x="nSites, H99",y="nGenes")
+
+ggplot(data=H99_nTSS,aes(x=nLocations)) + 
+    geom_histogram(binwidth=1) + 
+    labs(x="nLocations, H99",y="nGenes")
+
+ggplot(data=H99_nTSS,aes(x=Tot)) + 
+    geom_density(kernel="rectangular",adjust=0.5) + 
+    scale_x_log10("Total counts, H99")
 
 H99_TSS_byGene <- 
     melt_H99_TSScts %>%

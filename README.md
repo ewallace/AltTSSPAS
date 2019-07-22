@@ -29,10 +29,10 @@ estimation of differentially used termini
     [x] add data
     [x] add .Rmd files from 2018
     [x] check original .Rmd files run on data
-    [ ] collect functions (negbin fits etc) into single script
+    [ ] collect functions (negbin fits etc) into single script (started)
     [ ] add alt PAS
     [ ] expand to zero-inflated model?
-    [ ] assess effect on start codon usage (alt N-termini)
+    [x] assess effect on start codon usage (alt N-termini)
     [ ] assess effect on protein localization 
     [ ] interactive data visualization of clusters
     [ ] .wig raw TSS track visualization

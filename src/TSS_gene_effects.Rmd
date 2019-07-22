@@ -1,0 +1,249 @@
+---
+title: "Alternative TSSs that change the gene"
+author: "Edward Wallace, ewjwallace@gmail.com"
+date: "6th March 2018, rev 19 July 2019"
+output:
+  html_document:
+    toc: true
+    toc_depth: 4
+---
+
+# Summary 
+
+This document is focused on asking which candidate alternative TSSs could change the gene structure. It takes the alternative gene lists called as significant (1% FDR) from "TSS_alt_quant_negbin.Rmd" and asks which are in interesting different locations, e.g. in the coding region.
+
+
+```{r setup,warning=FALSE,message=FALSE,echo=FALSE,cache=FALSE}
+knitr::opts_chunk$set(warning=FALSE,message=FALSE,echo=FALSE,cache=TRUE,
+                      results="hide",
+                      fig.path="figure/TSS_gene_effects-",
+                      cache.path="cache/TSS_gene_effects-")
+source("shared_scripts.R")
+```
+
+# H99
+
+## Load TSS cts
+
+```{r load_H99TSScts}
+# setwd("/Users/edwardwallace/Dropbox (Drummond Lab)/MiscProjects/RibosomeProfiling_Madhani/Janbon_annotations/scripts_RNA_quant/")
+
+H99_TSScts <- read_tsv("../data/united/H99.TSStable.replicat.10.no_zero.notNorm.txt") %>%
+    separate(name,c("CNAbit","namebit","Site")) %>%
+    unite(Gene_name,CNAbit,namebit)
+
+melt_H99_TSScts <- gather(H99_TSScts,Sample,Count,-(Gene_name:location)) %>%
+    separate(Sample,c("Strain","Condition","Rep"),sep="_") %>%
+    mutate(Condition=factor(Condition, 
+                            levels=c("Expo30","Expo37","Stat30","Stat37"))
+           )
+
+H99_TSS_samples <- expand.grid(Strain="WT",
+                            Condition=c("Expo30","Expo37","Stat30","Stat37"),
+                            Rep=c("a","b","c") ) %>%
+    arrange(Strain,Condition,Rep) %>%
+    unite(Sample,Strain,Condition,Rep) %>%
+    .$Sample 
+
+H99_nTSS <- summarize_counts_bygene(H99_TSScts,H99_TSS_samples)
+
+```
+
+## load significant differences
+
+```{r load_H99sigdif}
+
+TSS_H99_regulatedsites_Expo37vsExpo30_WT <- read_lines("../results/alt_usage_calls_negbin/TSS_H99_regulatedsites_Expo37vsExpo30_WT.txt")
+
+TSS_H99_regulatedsites_Stat30vsExpo30_WT <- read_lines("../results/alt_usage_calls_negbin/TSS_H99_regulatedsites_Stat30vsExpo30_WT.txt")
+
+TSS_H99_regulatedsites_Stat37vsStat30_WT <- read_lines("../results/alt_usage_calls_negbin/TSS_H99_regulatedsites_Stat37vsStat30_WT.txt")
+
+TSS_H99_regulatedsites_Stat37vsExpo37_WT <- read_lines("../results/alt_usage_calls_negbin/TSS_H99_regulatedsites_Stat37vsExpo37_WT.txt")
+
+TSS_H99_regsites <- unique(c(TSS_H99_regulatedsites_Expo37vsExpo30_WT,
+                             TSS_H99_regulatedsites_Stat30vsExpo30_WT,
+                             TSS_H99_regulatedsites_Stat37vsStat30_WT,
+                             TSS_H99_regulatedsites_Stat37vsExpo37_WT))
+                      
+```
+
+
+## Find genes where the major TSS changes between condition
+
+```{r majChangeH99,dependson="summarize_H99TSScts",results="show"}
+H99_nTSS_maj <- 
+    melt_H99_TSScts %>%
+    group_by(Gene_name,Site,Strain,Condition) %>%
+    summarize(Count=sum(Count)) %>%
+    group_by(Gene_name,Strain,Condition) %>%
+    filter(Count==max(Count)) %>%
+    group_by(Gene_name) %>%
+    summarize(nMajSite=n_distinct(Site)) %>%
+    right_join(H99_nTSS)
+
+H99_nTSS_maj %>% 
+    filter(nMajSite > 1)
+```
+
+There are too many of these to be useful.
+
+### High counts, and a TSS is in cds.
+
+```{r majChangeCtCDS_H99,dependson="majChangeH99",results="show",fig.width=3,fig.height=3}
+majChangeCtCDS_H99 <- 
+    H99_nTSS_maj %>% 
+    filter(nMajSite > 1,cdsAlt) %>%
+    arrange(desc(Tot))
+
+majChangeCtCDS_H99
+
+# plot_altcountC(melt_H99_TSScts,majChangeCtCDS_H99$Gene_name[1])
+# 
+# plot_altcountC(melt_H99_TSScts,majChangeCtCDS_H99$Gene_name[2])
+# 
+# plot_altcountC(melt_H99_TSScts,majChangeCtCDS_H99$Gene_name[3])
+
+```
+
+There are still too many of these to be useful.
+
+### High counts, significant diff usage and a TSS is in cds.
+
+```{r majChangeCtCDSsig_H99,dependson="majChangeH99",results="show",fig.width=3,fig.height=3}
+majChangeCtCDS_H99 <- 
+    H99_nTSS_maj %>% 
+    filter(nMajSite > 1,cdsAlt, Gene_name %in% TSS_H99_regsites) %>%
+    arrange(desc(Tot))
+
+majChangeCtCDS_H99
+
+# plot_altcountC(melt_H99_TSScts,majChangeCtCDS_H99$Gene_name[1])
+# 
+# plot_altcountC(melt_H99_TSScts,majChangeCtCDS_H99$Gene_name[2])
+# 
+# plot_altcountC(melt_H99_TSScts,majChangeCtCDS_H99$Gene_name[3])
+
+```
+
+There are still almost 1000 of these. We plot the top 36 here to get some ideas
+
+```{r majChangeCtCDSsig_H99_manyplots,dependson="majChangeCtCDSsig_H99",results="show",fig.width=12,fig.height=12}
+
+plyr::llply(1:36,
+            function(i) {
+                plot_altcountC(melt_H99_TSScts,majChangeCtCDS_H99$Gene_name[i]) + 
+                    theme(legend.position="none",
+                          axis.text.x = element_blank(),
+                          axis.title.y=element_blank()) 
+            } ) %>%
+    plot_grid(plotlist=.,align="hv")
+
+
+```
+
+Those that look most interesting in terms of having a clear swap in TSS preference:
+
+- CNAG_01486
+- CNAG_01019 (SOD1)
+- CNAG_01733?
+- CNAG_00054
+- CNAG_07695 This is a uORF-containing translationally repressed gene from paper.
+- CNAG_01120?
+- CNAG_07427 Casein kinase II?
+- CNAG_03699 RNA helicase PRP5?
+- CNAG_06632 ABC1 protein kinase?
+- CNAG_04102 hypothetical protein
+- CNAG_05256 Catalase CAT2
+- CNAG_02226 hypothetical protein, peptidase/amidohydrolase AmhX homolog
+- CNAG_05916 hypothetical protein, mutant resistant to manganese metalloporphyrin PMID:30291809
+- CNAG_06436 hypothetical short protein with pred. signal peptide
+
+
+### High counts, sig diff, a TSS is in cds, predicted mitochondrial localization
+
+Using mitofates for the prediction
+
+```{r majChangeCtCDSsigmito_H99,dependson="majChangeH99",results="show",fig.width=3,fig.height=3}
+H99_mito <- read_mitofates("../data/geneinfo_location_orth/H99_mitofates.txt")
+
+majChangeCtCDSmito_H99 <- 
+H99_nTSS_maj %>% 
+    filter(nMajSite > 1,cdsAlt, Gene_name %in% TSS_H99_regsites) %>%
+    select(-utr3Altx) %>%
+    inner_join( H99_mito %>% filter(Pred_preseq) %>% select(Gene_name) ) %>%
+    arrange(desc(Tot)) 
+
+majChangeCtCDSmito_H99
+
+plot_altcountC(melt_H99_TSScts,majChangeCtCDSmito_H99$Gene_name[1])
+
+plot_altcountC(melt_H99_TSScts,majChangeCtCDSmito_H99$Gene_name[2])
+
+plot_altcountC(melt_H99_TSScts,majChangeCtCDSmito_H99$Gene_name[3])
+
+plot_altcountC(melt_H99_TSScts,majChangeCtCDSmito_H99$Gene_name[4])
+
+plot_altcountC(melt_H99_TSScts,majChangeCtCDSmito_H99$Gene_name[5])
+
+plot_altcountC(melt_H99_TSScts,majChangeCtCDSmito_H99$Gene_name[6])
+
+```
+
+Now the numbers are getting low enough to be interpretable: 57 genes. This means there is *no* enrichment for mito. localized genes in those with sig diff and an alt TSS is in cds; it's about 6% genome-wide.
+
+
+- CNAG_01120, pyruvate dehydrogenase complex LAT1 homolog.
+- CNAG_06632, ABC1 protein kinase
+- CNAG_04632, uridine/uracil permease family, membrane-localized
+- CNAG_05497, dihydroxy-acid dehydratase, ILV3 homolog
+- CNAG_06838, mitochondrial ATP-dependent RNA helicase SUV3 homolog
+- CNAG_03920, isocitrate dehydrogenase IDP1
+- CNAG_02074, Mitochondrial processing peptidase subunit alpha, MAS2/MIF2 homolog
+
+
+### High counts, sig diff, and alt TL / 5'UTR site
+
+These could in principle change the 5' end regulation. We should add those with suspected uORFs.
+
+```{r majChangeCtUTR5sig_H99,dependson="majChangeH99",results="show",fig.width=3,fig.height=3}
+majChangeCtUTR5_H99 <- 
+    H99_nTSS_maj %>% 
+    filter(nMajSite > 1,utr5Altx, Gene_name %in% TSS_H99_regsites) %>%
+    select(-utr3Altx) %>%
+    arrange(desc(Tot))
+
+majChangeCtUTR5_H99
+
+plot_altcountC(melt_H99_TSScts,majChangeCtUTR5_H99$Gene_name[1])
+
+plot_altcountC(melt_H99_TSScts,majChangeCtUTR5_H99$Gene_name[2])
+
+plot_altcountC(melt_H99_TSScts,majChangeCtUTR5_H99$Gene_name[3])
+
+```
+
+```{r majChangeCtUTR5sig_H99_manyplots,dependson="majChangeCtUTR5sig_H99",results="show",fig.width=12,fig.height=12}
+
+plyr::llply(1:36,
+            function(i) {
+                plot_altcountC(melt_H99_TSScts,majChangeCtUTR5_H99$Gene_name[i]) + 
+                    theme(legend.position="none",
+                          axis.text.x = element_blank(),
+                          axis.title.y=element_blank()) 
+            } ) %>%
+    plot_grid(plotlist=.,align="hv")
+
+```
+
+Interesting:
+
+- CNAG_00870, hypothetical protein with 5' utr introns.
+- CNAG_03388, nuclear RPD3S histone deacetylase complex member, RCO1 homolog
+- CNAG_01174 pheromone-regulated protein PRM10 homolog, duplications in other fungi.
+- CNAG_05799 Chitin deacetylase CDA1
+- CNAG_05155 protein-tyrosine-phosphatase PTP2
+- CNAG_00679, hypothetical protein.
+- CNAG_06614 glycerophosphodiesterase Pgc1
+- CNAG_03998 MADS-box transcription factor RLM1
+- CNAG_07631 hypothetical protein with predicted carbohydrate-binding domain
